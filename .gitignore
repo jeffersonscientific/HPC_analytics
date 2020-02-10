@@ -1,4 +1,9 @@
-
+# HPC and analytics inputs, outputs, etc.:
+*.err
+*.out
+data/
+#
+#
 *.png
 *.jpg
 *.dat
