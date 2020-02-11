@@ -10,5 +10,5 @@ FORMAT="ALL"
 #
 #srun sacct -a -p --delimiter="|" --${STARTTIME} --format=User,Group,GID,JobID,Jobname,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended
 
-srun sacct --allusers --partition=hns -p --delimiter="|" ----starttime=${STARTTIME} --format=${FORMAT}
+srun sacct --allusers --partition=hns -p --delimiter="|" --starttime=${STARTTIME} --format=${FORMAT}
 
