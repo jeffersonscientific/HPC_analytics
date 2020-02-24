@@ -4,7 +4,7 @@
 #SBATCH -e sacct_sherlock_out.err
 
 # can we pass "\t" correctly? maybe for now, just use the HPC standard "|" as a delimiter...
-STARTTIME="2020-01-01"
+STARTTIME="2020-01-01"/Users/myoder96/Codes/HPC_analytics
 ENDTIME="2020-1-31"
 #FORMAT="User,Group,GID,JobID,Jobname,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended"
 FORMAT="ALL"
