@@ -11,7 +11,7 @@ ENDTIME="2020-11-30"
 # old-school format list elements for jobarrayid, stepid, arraytaskid (i think, maybe not in that order)
 # -o %F, %i, %K,
 # note, little "-o", but it looks like -o, -O, --Format, --format are all cross-supported ? or at least partially? It also looks like the field names are not cap-sensitive?
-FORMAT="User,Group,GID,Jobname,JobID, jobarrayid, stepid, arraytaskid,  partition, state, Submit, time, Eligible, start, end,elapsed, MaxRss, MaxVMSize, nnodes, ncpus, SystemCPU, UserCPU, TotalCPU, Suspended"
+FORMAT="User,Group,GID,Jobname,JobID,jobarrayid,stepid,arraytaskid,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended"
 #
 #FORMAT="ALL"
 PARTITION="hns"
