@@ -2,7 +2,7 @@
 #SBATCH -n 1
 #SBATCH -o sacct_sherlock_out_hns.out
 #SBATCH -e sacct_sherlock_out_hns.err
-#SBATCH -p hns
+#SBATCH -p normal
 #
 # can we pass "\t" correctly? maybe for now, just use the HPC standard "|" as a delimiter...
 STARTTIME="2019-11-01"
@@ -19,7 +19,8 @@ srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019
 srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019-11-16 --endtime=2019-12-15 --format=${FORMAT}
 srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019-12-16 --endtime=2020-01-15 --format=${FORMAT}
 srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2020-01-16 --endtime=2020-02-15 --format=${FORMAT}
+#srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2020-01-16 --endtime=2020-02-15 --format=${FORMAT}
 
 #srun sacct --allusers --partition=hns -p --delimiter="|" --starttime=${STARTTIME} --endtime=${ENDTIME} --format=${FORMAT}
-
+# sacct --allusers --starttime=2020-02-01 --endtime=2020-02-29 --partition=hns
 
