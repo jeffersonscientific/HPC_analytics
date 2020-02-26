@@ -7,7 +7,9 @@
 # can we pass "\t" correctly? maybe for now, just use the HPC standard "|" as a delimiter...
 STARTTIME="2019-11-01"
 ENDTIME="2020-11-30"
-FORMAT="User,Group,GID,JobID,Jobname,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended"
+#FORMAT="User,Group,GID,JobID,Jobname,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended"
+FORMAT="User,Group,GID,Jobname,JobID, %F, %i, %K, ,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended"
+#
 #FORMAT="ALL"
 PARTITION="hns"
 #
