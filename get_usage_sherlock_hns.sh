@@ -25,6 +25,8 @@ srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --sta
 srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2019-11-16 --endtime=2019-12-15 --format=${FORMAT}
 srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2019-12-16 --endtime=2020-01-15 --format=${FORMAT}
 srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-01-16 --endtime=2020-02-15 --format=${FORMAT}
+srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-02-16 --endtime=2020-03-15 --format=${FORMAT}
+
 
 #srun sacct --allusers --partition=hns -p --delimiter="|" --starttime=${STARTTIME} --endtime=${ENDTIME} --format=${FORMAT}
 
