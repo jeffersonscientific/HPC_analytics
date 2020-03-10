@@ -295,8 +295,8 @@ class SACCT_data_handler(object):
         #
         # Does numpy.amin() work around the None problem?
         #
-        t_min = numpy.min([numpy.min(t_start), numpy.min([x for x in t_end if not x is None])])
-        t_max = numpy.max([numpy.max(t_start), numpy.max([x for x in t_end if not x is None])])
+        t_min = numpy.min([numpy.min(t_start), numpy.min([x for x in t_end if not (x is None or numpy.isnan(x)) ])])
+        t_max = numpy.max([numpy.max(t_start), numpy.max([x for x in t_end if not (x is None or numpy.isnan(x)) ])])
         #
         # can also create X sequence like this, for minute resolution
         # X = numpy.arange(t_min, t_max, 1./(24*60))
@@ -340,7 +340,6 @@ class SACCT_data_handler(object):
         #
         return wait_stats
     #
-
     #
     def submit_wait_distribution(self, n_cpu=1):
         n_cpu = numpu.atleast_1d(n_cpu)
@@ -348,7 +347,6 @@ class SACCT_data_handler(object):
         X = self.jobs_summary['Start'] - self.jobs_summary['Submit']
         #
         return numpy.array([n_cpu, [X[n] for n in n_cpu]]).T
-            
     #
     def get_wait_times_per_ncpu(self, n_cpu):
         # get wait-times for n_cpu cpus. to be used independently or as an MPP worker function.
