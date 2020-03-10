@@ -83,7 +83,7 @@ def running_mean(X, n=10):
 class SACCT_data_handler(object):
     #
     dtm_handler_default = str2date_num
-    default_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str,
+    default_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
             'Timelimit':elapsed_time_2_day,
                 'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
                         'Eligible':dtm_handler_default,
@@ -132,9 +132,14 @@ class SACCT_data_handler(object):
         job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]  
                                                     for s in self.data['JobID'][ix_user_jobs] ])}
         #
-        for k,s in enumerate(self.data['JobID']):
-            job_ID_index[s.split('.')[0]] += [k]
-            #group_index[s.split('.')[0]] = numpy.append(group_index[s.split('.')[0]], [k])
+        #for k,s in enumerate(self.data['JobID']):
+        #    job_ID_index[s.split('.')[0]] += [k]
+        #    #group_index[s.split('.')[0]] = numpy.append(group_index[s.split('.')[0]], [k])
+        #
+        #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
+        for k,s in enumerate(self.data['JobID_parent']):
+            job_ID_index[s] += [k]
+        #
         #
         # we should be able to MPP this as well...
         #jobs_summary = numpy.recarray(shape=(len(job_ID_index), self.data.shape[1]), dtype=data.dtype)
@@ -182,10 +187,12 @@ class SACCT_data_handler(object):
             headers_rw = fin.readline()
             if verbose:
                 print('*** headers_rw: ', headers_rw)
-            headers = headers_rw[:-1].split(delim)[:-1]
+            #headers = headers_rw[:-1].split(delim)[:-1]
+            headers = headers_rw[:-1].split(delim)[:-1] + ['JobID_parent']
             #
             # make a row-handler dictionary, until we have proper indices.
             RH = {h:k for k,h in enumerate(headers)}
+            self.RH = RH
             #
             #self.RH=RH
             #self.headers=headers
@@ -257,9 +264,11 @@ class SACCT_data_handler(object):
         # use this with MPP processing:
         #
         # use this for MPP processing:
-        #rws = rw.split(delim)
+        rws = rw.split(self.delim)
+        #return [None if vl=='' else self.types_dict.get(col,str)(vl)
+        #            for k,(col,vl) in enumerate(zip(self.headers, rw.split(self.delim)[:-1]))]
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
-                    for k,(col,vl) in enumerate(zip(self.headers, rw.split(self.delim)[:-1]))]
+                    for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
     #
     def active_jobs_cpu(self, n_points=100000):
         #
