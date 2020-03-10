@@ -368,7 +368,46 @@ class SACCT_data_handler(object):
         #
         return self.jobs_summary.tofile(output_path,
                                         format='%s{}'.format(delim).join(self.headers), sep=delim)
+    #
+    def get_submit_wait_timeofday(self, time_units='hours', qs=[.5, .75, .95]):
+        #
+        # TODO: allow units and modulus choices.
+        #tu={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes',
+        #    'minute':'minutes', 'minutes':'minutes', 
+        #    'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
+        #    
+        #time_units = tu.get(time_units,time_units)
+        #time_units_dict={'days':1., 'hours':24., 'minutes':float(24*60), 'seconds':float(24*3600)}
+        #
+        #tf = time_units_dict[time_units]
+        #
+        X = (self.jobs_summary['Submit']*24.)%24
+        Y = (self.jobs_summary['Start']- self.jobs_summary['Submit'] )*24
+        #
+        # TODO: we were sorting for a reason, but do we still need to?
+        ix = numpy.argsort(X)
+        X = X[ix].astype(int)    # NOTE: at some point, we might actually want the non-int X values...
+        Y = Y[ix]
+        X0 = numpy.unique(X).astype(int)
+        #        
+        quantiles = numpy.array([numpy.quantile(Y[X==j], qs) for j in X0])
         
+        #quantiles = numpy.array([numpy.quantile(y[X.astype(int)==int(j)], qs) for j in range(24)])
+        #
+        # let's do a quick check to see if these numbers are being computed correctly. so
+        #. let's do in the hard way 
+        # These numbers apepar to check out, so let's keep the mean() calc, but do it a faster way.
+        #means = numpy.array([numpy.mean([y for x,y in zip(X,Y) if int(x)==j]) for j in X0])
+        #medians = numpy.array([numpy.median([y for x,y in zip(X,Y) if int(x)==j]) for j in X0])
+        means = numpy.array([numpy.mean(Y[X==j]) for j in X0])
+        #
+        # wrap up in an array:
+        #dts =[('time', '>f8'), ('mean', '>f8')] + [('q{}'.format(q), '>f8') for q in qs]
+            
+            
+        return numpy.core.records.fromarrays(numpy.append([X0, means], quantiles.T, axis=0),
+                                              dtype=[('time', '>f8'), ('mean', '>f8')] +
+                                             [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
 
 class SACCT_data_from_inputs(SACCT_data_handler):
     # a SACCT_data handler that loads input file(s). Most of the time, we don't need the primary
