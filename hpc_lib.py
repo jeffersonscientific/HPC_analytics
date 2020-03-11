@@ -28,7 +28,9 @@ def str2date_num(dt_str, verbose=0):
         if verbose:
             print('error in date-number conversion: ', dt_str)
         return None
-
+#
+def simple_date_string(dtm, delim='-'):
+    return delim.join([str(x) for x in [dtm.year, dtm.month, dtm.day]])
 #
 def elapsed_time_2_day(tm_in):
     tm_ins = tm_in.split('-')
@@ -173,7 +175,7 @@ class SACCT_data_handler(object):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
     #
-    def load_sacct_data(self, data_file_name=None, delim=None, verbose=0, max_rows=None, chunk_size=None):
+    def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None):
         if data_file_name is None:
             data_file_name = self.data_file_name
         if delim is None:
@@ -205,8 +207,6 @@ class SACCT_data_handler(object):
             # TODO: it would be a nice performance boost to only work through a subset of the headers...
             #active_headers = [cl for cl in headers if cl in types_dict.keys()]
             #
-            #
-            
             n_rws = 0
             # 
             # TODO: reevaluate readlines() vs for rw in...
@@ -214,8 +214,10 @@ class SACCT_data_handler(object):
             # eventually, we might need to batch this.
             P = mpp.Pool(n_cpu)
             self.headers = headers
+            #
             results = P.map_async(self.process_row, fin, chunksize=chunk_size)
             P.close()
+            P.join()
             data = results.get()
             #
             del results, P
@@ -252,6 +254,7 @@ class SACCT_data_handler(object):
             #
             if verbose:
                 print('** len: ', len(data))
+                self.raw_data_len = len(data)
             #
             #self.data=data
             # TODO: asrecarray()?
