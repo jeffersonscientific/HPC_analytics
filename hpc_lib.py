@@ -343,9 +343,6 @@ class SACCT_data_handler(object):
         #
         X = numpy.linspace(t_min, t_max, n_points)
         #
-        # block this out; then see about a list-comp, or other optimization.
-        cpu_hours = numpy.zeros( (len(X), 4) )
-        #
         # in steps
         #IX_t = numpy.array([numpy.logical_and(t_start<=t, t_end>t) for t in X])
         print('*** debug: starting IX_k')
@@ -363,8 +360,8 @@ class SACCT_data_handler(object):
         #
         #cpu_h[Ns_ix==0] = 0.
         #cpu_h = numpy.sum( numpy.min([X.reshape(-1,1), t_end[IX_k]] ) - numpy.max([(X-bin_size).reshape(-1,1), t_start[IX_k]] ) , axis=1)
-        cpu_h = numpy.array([numpy.sum(numpy.min([numpy.ones(len(ix))*x, t_end[ix]], axis=0) - 
-                           numpy.max([numpy.ones(len(ix))*(x-bin_size), t_start[ix]], axis=0))
+        cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(ix))*x, t_end[ix]], axis=0) - 
+                           numpy.max([numpy.ones(len(ix))*(x-bin_size), t_start[ix]], axis=0))*(jobs_summary['NCPUS'][0])[ix] )
                            for x,ix in zip(X, IX_k)]) 
                                       
         #cpu_h = numpy.sum([numpy.min([numpy.broadcast_to(X.reshape(-1,1), (len(X), len(ix))),
