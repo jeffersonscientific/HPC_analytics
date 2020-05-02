@@ -6,9 +6,11 @@ import scipy
 import matplotlib.dates as mpd
 #import pylab as plt
 import datetime as dtm
+import pytz
 import multiprocessing as mpp
 import pickle
 #
+import numba
 import pandas
 #
 def str2date(dt_str, verbose=0):
@@ -32,7 +34,12 @@ def str2date_num(dt_str, verbose=0):
 def simple_date_string(dtm, delim='-'):
     return delim.join([str(x) for x in [dtm.year, dtm.month, dtm.day]])
 #
-def elapsed_time_2_day(tm_in):
+def elapsed_time_2_day(tm_in, verbose=0):
+    #
+    # TODO: really??? why not just post the PL value?
+    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ):
+        return None
+    #
     tm_ins = tm_in.split('-')
     #
     if len(tm_ins)==0:
@@ -44,18 +51,27 @@ def elapsed_time_2_day(tm_in):
         days = tm_ins[0]
         tm = tm_ins[1]
     #
-    h,m,s = tm.split(':')
-    #try:
-    #    h,m,s = tm.split(':')
-    #except:
-    #    print('*** AHHH!!! error! ', tm, tm_in)
-    #    raise Exception("broke on elapsed time.")
+    #
+    if verbose:
+        try:
+            h,m,s = tm.split(':')
+        except:
+            print('*** AHHH!!! error! tm_in: {}, tm_ins: {}, tm: {}'.format(tm_in, tm_ins, tm) )
+            raise Exception("broke on elapsed time.")
+    else:
+        h,m,s = tm.split(':')
         
     #
     #return (float(days)*24.*3600. + float(h)*3600. + float(m)*60. + float(s))/(3600.*24)
     return float(days) + float(h)/24. + float(m)/(60.*24.) + float(s)/(3600.*24.) 
                        
-def elapsed_time_2_sec(tm_in):
+def elapsed_time_2_sec(tm_in, verbose=0):
+    #
+    # TODO: really??? why not just post the PL value?
+    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ):
+    #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
+        return None
+    #
     # guessing for now...
     tm_ins = tm_in.split('-')
     #
@@ -68,12 +84,15 @@ def elapsed_time_2_sec(tm_in):
         days = tm_ins[0]
         tm = tm_ins[1]
     #
-    h,m,s = tm.split(':')
-    #try:
-    #    h,m,s = tm.split(':')
-    #except:
-    #    print('*** AHHH!!! error! ', tm, tm_in)
-    #    raise Exception("broke on elapsed time.")
+    
+    if verbose:
+        try:
+            h,m,s = tm.split(':')
+        except:
+            print('*** AHHH!!! error! ', tm, tm_in)
+            raise Exception("broke on elapsed time.")
+    else:
+        h,m,s = tm.split(':')
         
     #
     return float(days)*24.*3600. + float(h)*3600. + float(m)*60. + float(s)
@@ -93,7 +112,7 @@ class SACCT_data_handler(object):
             'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':str, 'UserCPU':str,
             'TotalCPU':str}
     #
-    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000):
+    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None):
         #
         if types_dict is None:
             #
@@ -103,6 +122,8 @@ class SACCT_data_handler(object):
             #dtm_handler = str2date
             #dtm_handler = str2date_num
             types_dict=self.default_types_dict
+        #
+        n_cpu = n_cpu or mpp.cpu_count()
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
@@ -122,7 +143,7 @@ class SACCT_data_handler(object):
         # (maybe rename ix_sorting_{description} )
         index_job_id = numpy.argsort(self.data['JobID'])
         index_start  = numpy.argsort(self.data['Start'])
-        index_endf   = numpy.argsort(self.data['End'])
+        index_end   = numpy.argsort(self.data['End'])
         #
         # group jobs; compute summary table:
         ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in self.data['JobID']])
@@ -146,6 +167,7 @@ class SACCT_data_handler(object):
         # we should be able to MPP this as well...
         #jobs_summary = numpy.recarray(shape=(len(job_ID_index), self.data.shape[1]), dtype=data.dtype)
         jobs_summary = numpy.recarray(shape=(len(job_ID_index), ), dtype=data.dtype)
+        t_now = mpd.date2num(dtm.datetime.now())
         for k, (j_id, ks) in enumerate(job_ID_index.items()):
             jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
             
@@ -157,8 +179,10 @@ class SACCT_data_handler(object):
             #. {stuff} = max(data['End'][ks])
             #
             sub_data = data[sorted(ks)]
-            jobs_summary[k]['End'] = numpy.max(sub_data['End'])
-            jobs_summary[k]['Start'] = numpy.min(sub_data['Start'])
+            
+            #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
+            jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
+            jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
             jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
             jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
         #
@@ -175,7 +199,8 @@ class SACCT_data_handler(object):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
     #
-    def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None):
+    @numba.jit
+    def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
         if data_file_name is None:
             data_file_name = self.data_file_name
         if delim is None:
@@ -183,6 +208,9 @@ class SACCT_data_handler(object):
         max_rows = max_rows or self.max_rows
         chunk_size = chunk_size or self.chunk_size
         chunk_size = chunk_size or 100
+        #
+        n_cpu = n_cpu or self.n_cpu
+        n_cpu = n_cpu or mpp.cpu_count()
         #
         #
         with open(data_file_name, 'r') as fin:
@@ -210,18 +238,23 @@ class SACCT_data_handler(object):
             n_rws = 0
             # 
             # TODO: reevaluate readlines() vs for rw in...
-            n_cpu = mpp.cpu_count()
+            #n_cpu = mpp.cpu_count()
             # eventually, we might need to batch this.
-            P = mpp.Pool(n_cpu)
-            self.headers = headers
+            if n_cpu > 1:
+                P = mpp.Pool(n_cpu)
+                self.headers = headers
+                #
+                # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
+                # for the use of P.map(), using a context manager and functools.partial()
+                results = P.map_async(self.process_row, fin, chunksize=chunk_size)
+                P.close()
+                P.join()
+                data = results.get()
+                #
+                del results, P
+            else:
+                data = [self.process_row(rw) for rw in fin]
             #
-            results = P.map_async(self.process_row, fin, chunksize=chunk_size)
-            P.close()
-            P.join()
-            data = results.get()
-            #
-            del results, P
-            
             #all_the_data = fin.readlines(max_rows)
             #
 #             data = []
@@ -261,8 +294,10 @@ class SACCT_data_handler(object):
             #self.data = pandas.DataFrame(data, columns=active_headers).to_records()
             #return data
             #
+            # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
             return pandas.DataFrame(data, columns=active_headers).to_records()
         #
+    @numba.jit
     def process_row(self, rw):
         # use this with MPP processing:
         #
@@ -273,22 +308,124 @@ class SACCT_data_handler(object):
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
                     for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
     #
-    def active_jobs_cpu(self, n_points=100000):
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None):
+        '''
+        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
+        #. but it should be manageable).
+        '''
         #
-        #t_now = mpd.date2num(dtm.datetime.now())
         t_now = mpd.date2num( dtm.datetime.now() )
+        #
+        # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something) 
+        #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
+        #. ARY[col][k] --> (ARY[col][0])[k]
+        jobs_summary = self.jobs_summary[IX]
         #
         # been wrestling with datetime types, as usual, so eventually decided maybe to just
         #. use floats?
-        #t_start = mpd.date2num(self.jobs_summary['Start'].astype(dtm.datetime))
-        #t_start = mpd.datestr2num(numpy.datetime_as_string(self.jobs_summary['Start']))
-        t_start = self.jobs_summary['Start']
+        #t_start = self.jobs_summary['Start']
+        t_start = jobs_summary['Start'][0]
         #
-        t_end = self.jobs_summary['End']
-        #t_end[t_end is None] = numpy.datetime64(t_now)
-        t_end[t_end is None] = t_now
-        #t_end = mpd.datestr2num(numpy.datetime_as_string(self.jobs_summary['End']))
+        #t_end = self.jobs_summary['End']
+        t_end = jobs_summary['End'][0]
+        #
+        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+        #
+        print('** DEBUG: ', t_end.shape, t_start.shape)
+        #
+        #
+        if t_min is None:
+            t_min = numpy.nanmin([t_start, t_end])
+        t_max = numpy.nanmax([t_start, t_end])
+        #
+        # can also create X sequence like this, for minute resolution
+        # X = numpy.arange(t_min, t_max, 1./(24*60))
+        #
+        X = numpy.linspace(t_min, t_max, n_points)
+        #
+        # block this out; then see about a list-comp, or other optimization.
+        cpu_hours = numpy.zeros( (len(X), 4) )
+        #
+        # in steps
+        #IX_t = numpy.array([numpy.logical_and(t_start<=t, t_end>t) for t in X])
+        print('*** debug: starting IX_k')
+        #
+        #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
+        IX_k = [numpy.where(numpy.logical_and(x>=t_start, (x-bin_size)<t_end))[0] for x in X]
+        N_ix = numpy.array([len(rw) for rw in IX_k])
+        #print('*** DEBUG: IX_k.shape: ', IX_k.shape)
+        print('*** DEBUG: IX_K:: ', IX_k[0:5])
+        print('*** DEBUG: IX_k[0]: ', IX_k[0], type(IX_k[0]))
+        #
+        # find empty sets: sum(bool)=0
+        #Ns_ix = numpy.sum(IX_t, axis=1).astype(int)
+        #print('*** debug: ', Ns_ix.shape)
+        #
+        #cpu_h[Ns_ix==0] = 0.
+        #cpu_h = numpy.sum( numpy.min([X.reshape(-1,1), t_end[IX_k]] ) - numpy.max([(X-bin_size).reshape(-1,1), t_start[IX_k]] ) , axis=1)
+        cpu_h = numpy.array([numpy.sum(numpy.min([numpy.ones(len(ix))*x, t_end[ix]], axis=0) - 
+                           numpy.max([numpy.ones(len(ix))*(x-bin_size), t_start[ix]], axis=0))
+                           for x,ix in zip(X, IX_k)]) 
+                                      
+        #cpu_h = numpy.sum([numpy.min([numpy.broadcast_to(X.reshape(-1,1), (len(X), len(ix))),
+        #                                                 numpy.broadcast_to(t_end[ix], (len(X), len(ix))) ], axis=0 ) -   
+        #                   numpy.max( [ numpy.broadcast_to( (X-bin_size).reshape(-1,1), (len(X), len(ix))),
+        #                               numpy.broadcast_to(t_start[ix], (len(X), len(ix))) ], axis=0 )
+        #                  for ix in IX_k], axis=1)
+        #
         
+        print('*** ', cpu_h.shape)
+        #
+#         for k,t in enumerate(X):
+#             ix_t = numpy.logical_and(t_start<=t, t_end>(t-bin_size) )
+#             #print('*** shape(ix_t): {}//{}'.format(ix_t.shape, numpy.sum(ix_t)) )
+#             #
+#             N_ix = numpy.sum(ix_t)
+#             if N_ix==0:
+#                 cpu_hours[k] = t, t-bin_size,0.,0.
+#                 continue
+#             #
+#             #print('** ** ', ix_t)
+#             cpu_hours[k] = t, t-bin_size, numpy.sum( numpy.min([t*numpy.ones(N_ix), t_end[ix_t]], axis=0) - 
+#                                numpy.max([(t-bin_size)*numpy.ones(N_ix), t_start[ix_t]]))*24., N_ix
+#         #
+        #return cpu_h
+        #print('*** DB: ', N_ix[0:10])
+        #print('*** shapes: ', [numpy.shape(s) for s in [X,X-bin_size, cpu_h, N_ix]])
+        return numpy.core.records.fromarrays([X, X-bin_size, cpu_h, [len(rw) for rw in IX_k]], dtype=[('time', '>f8'), 
+                                                                       ('t_start', '>f8'),
+                                                                       ('cpu_hours', '>f8'),
+                                                                       ('N_jobs', '>f8')])
+        #return numpy.core.records.fromarrays([X, cpu_h], dtype=[('time', '>f8'), 
+        #                                                             ('cpu_hours', '>f8')])
+        #return numpy.array([X,cpu_h]).T
+    #
+    #@numba.jit
+    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None):
+        '''
+        # @n_points: number of points in returned time series.
+        # @bin_size: size of bins. This will override n_points
+        # @t_min: start time (aka, bin phase).
+        # @ix: an index, aka user=my_user
+        '''
+        #
+        #
+        t_now = mpd.date2num( dtm.datetime.now() )
+        #
+        jobs_summary = self.jobs_summary[ix]
+        #
+        # been wrestling with datetime types, as usual, so eventually decided maybe to just
+        #. use floats?
+        #t_start = self.jobs_summary['Start']
+        t_start = jobs_summary['Start']
+        #
+        #t_end = self.jobs_summary['End']
+        t_end = jobs_summary['End']
+        
+        #t_end[t_end is None] = numpy.datetime64(t_now)
+        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+        #t_end = mpd.datestr2num(numpy.datetime_as_string(self.jobs_summary['End']))
+        #
         #t_end = self.jobs_summary['End'].astype(dtm.datetime)
         #t_end[t_end is None]=numpy.datetime64(t_now)
         #t_end = mpd.date2num(t_end)
@@ -296,22 +433,61 @@ class SACCT_data_handler(object):
         print('** DEBUG: ', t_end.shape, t_start.shape)
         #
         #
-        # Does numpy.amin() work around the None problem?
-        #
-        t_min = numpy.min([numpy.min(t_start), numpy.min([x for x in t_end if not (x is None or numpy.isnan(x)) ])])
-        t_max = numpy.max([numpy.max(t_start), numpy.max([x for x in t_end if not (x is None or numpy.isnan(x)) ])])
+        if t_min is None:
+            t_min = numpy.nanmin([t_start, t_end])
+        t_max = numpy.nanmax([t_start, t_end])
         #
         # can also create X sequence like this, for minute resolution
         # X = numpy.arange(t_min, t_max, 1./(24*60))
         #
-        X = numpy.linspace(t_min, t_max, 10000)
+        if bin_size is None:
+            X = numpy.linspace(t_min, t_max, n_points)
+        else:
+            X = numpy.arange(t_min, t_max, bin_size)
+        #
         Ns = numpy.zeros(len(X))
         Ns_cpu = numpy.zeros(len(X))
         #
-        for j, t in enumerate(X):
-            ix = numpy.logical_and(t_start<=t, t_end>t)
-            Ns[j] = numpy.sum(ix.astype(int))
-            Ns_cpu[j] = numpy.sum(self.jobs_summary['NCPUS'][ix])
+        # This is a slick way to make an index, but It uses too much memory (unless
+        #.  we want to have custom runs for high-mem HPC nodes... or have a go on one of the tool servers.
+        # for now, I think this index is just too much...
+        #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
+        # the boolean index gets really big, so it makes sense to also (or alternatively) use an positional index:
+        #
+        # really a pain to get this to handle an empty set...
+        #IX_k = numpy.array([numpy.where(ix) for ix in IX_t])
+        IX_k = [numpy.where(numpy.logical_and(x>=t_start, x<t_end))[1] for x in X]
+        #IX_k = numpy.array([numpy.arange(len(t_start))[numpy.logical_and([x]>=t_start, [x]<t_end)] for x in X])
+        #IX_k = numpy.array([[k for k, (t1,t2) in enumerate(zip(t_start, t_end)) if x>=t1 and x<t2] for x in X])
+        #        
+        #Ns = numpy.sum(IX_t, axis=1)
+        Ns = numpy.array([len(rw) for rw in IX_k])
+        #
+#         print('*** NCPUS_shape: ',jobs_summary['NCPUS'].shape) 
+#         print('*** len(IX_k): ', Ns[0:5])
+#         print('*** IX_k: ', IX_k[0:5])
+#         print('*** IX?: ', numpy.sum(numpy.logical_and(X[0]>=t_start, X[0]<t_end)))
+#         print('* * * ', X[0])
+#         print('*** IX_where][{}]:: *. {} .*'.format(X[0], list(numpy.where(numpy.logical_and( X.reshape(-1,1)[0] >=t_start, X.reshape(-1,1)[0]<t_end))[1] ) ) )
+        #
+        # See above; there is a way to do this in full-numpy mode, but it will use most of the memory in the world,
+        #.  so probably not reliable even on the HPC... and in fact likely not faster, since the matrices/vectors are
+        #. ver sparse.
+        #Ns_cpu = numpy.sum(jobs_summary['NCPUS'][IX_t], axis=1)
+        
+        Ns_cpu = numpy.array([numpy.sum(jobs_summary['NCPUS'][0][kx]) for kx in IX_k])
+        # there should be a way to broadcast the array to indices, but I'm not finding it just yet...
+        #Ns_cpu = numpy.sum(numpy.broadcast_to(jobs_summary['NCPUS'][0], (len(IX_k),len(jobs_summary) )
+        
+        
+        #
+#         for j, t in enumerate(X):
+#             ix_t = numpy.logical_and(t_start<=t, t_end>t)
+#             #
+#             # TODO: weight jobs, ncpu by fraction of time active during bin interval.
+#             #
+#             Ns[j] = numpy.sum(ix_t.astype(int))
+#             Ns_cpu[j] = numpy.sum(jobs_summary['NCPUS'][ix_t])
         # 
         return numpy.core.records.fromarrays([X, Ns, Ns_cpu], dtype=[('time', '>f8'), 
                                                                      ('N_jobs', '>f8'),
