@@ -112,6 +112,11 @@ class SACCT_data_handler(object):
             'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':str, 'UserCPU':str,
             'TotalCPU':str}
     #
+    time_units_labels={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes','minute':'minutes', 'minutes':'minutes', 'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
+    #    
+    time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
+    #
+    #
     def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None):
         #
         if types_dict is None:
@@ -123,16 +128,39 @@ class SACCT_data_handler(object):
             #dtm_handler = str2date_num
             types_dict=self.default_types_dict
         #
-        n_cpu = n_cpu or mpp.cpu_count()
+        n_cpu = (n_cpu or mpp.cpu_count() )
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
-        # especially for dev, allow to pass the DF object itself...
+        # allow multiple inputs:
+        # we need to work out duplicates before we can do this. for now, if we have to concatenate files, 
+        #. let's either do it off-line or otherwise semi-manually.
+        #
+#         if not (isinstance(data_file_name, list) or isinstance(data_file_name, tuple) ):
+#             data_file_name = [data_file_name]
+#         #
+#         for k, dfn in enumerate(data_file_name):
+#             if isinstance(dfn, str):
+#                 dta = self.load_sacct_data()
+#             #
+#             if k == 0:
+#                 self.data = dta.copy()
+#             else:
+#                 self.data = numpy.append(self.data, dta)
+#             #
+#         #
+#         # this is inefficient (we should do it before we make the arrays, or pass the array of filenames
+#         #. to load_sacct_data(), but for now...
+#         # de-dupe using numpy.unique(). Note rows need to be cast as tuple()
+#         self.data = numpy.core.records.fromarrays(zip(*numpy.unique([tuple(rw) for rw in self.data])), dtype=self.data.dtype)
+
+        # especially for dev, allow to pass the recarray object itself...
         if isinstance(data_file_name, str):
             self.data = self.load_sacct_data()
         else:
             self.data = data_file_name
             #self.data = self.data_df.values.to_list()
+        #
         self.headers = self.data.dtype.names
         self.RH = {h:k for k,h in enumerate(self.headers)}
         #
@@ -142,8 +170,8 @@ class SACCT_data_handler(object):
         # sorting indices:
         # (maybe rename ix_sorting_{description} )
         index_job_id = numpy.argsort(self.data['JobID'])
-        index_start  = numpy.argsort(self.data['Start'])
-        index_end   = numpy.argsort(self.data['End'])
+        #index_start  = numpy.argsort(self.data['Start'])
+        #index_end   = numpy.argsort(self.data['End'])
         #
         # group jobs; compute summary table:
         ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in self.data['JobID']])
@@ -199,7 +227,7 @@ class SACCT_data_handler(object):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
     #
-    @numba.jit
+    #@numba.jit
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
         if data_file_name is None:
             data_file_name = self.data_file_name
@@ -241,6 +269,7 @@ class SACCT_data_handler(object):
             #n_cpu = mpp.cpu_count()
             # eventually, we might need to batch this.
             if n_cpu > 1:
+                # TODO: use a context manager syntax instead of open(), close(), etc.
                 P = mpp.Pool(n_cpu)
                 self.headers = headers
                 #
@@ -251,7 +280,8 @@ class SACCT_data_handler(object):
                 P.join()
                 data = results.get()
                 #
-                del results, P
+                del results
+                del P
             else:
                 data = [self.process_row(rw) for rw in fin]
             #
@@ -362,7 +392,9 @@ class SACCT_data_handler(object):
         #cpu_h = numpy.sum( numpy.min([X.reshape(-1,1), t_end[IX_k]] ) - numpy.max([(X-bin_size).reshape(-1,1), t_start[IX_k]] ) , axis=1)
         cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(ix))*x, t_end[ix]], axis=0) - 
                            numpy.max([numpy.ones(len(ix))*(x-bin_size), t_start[ix]], axis=0))*(jobs_summary['NCPUS'][0])[ix] )
-                           for x,ix in zip(X, IX_k)]) 
+                           for x,ix in zip(X, IX_k)])
+        # convert to hours:
+        cpu_h*=24.
                                       
         #cpu_h = numpy.sum([numpy.min([numpy.broadcast_to(X.reshape(-1,1), (len(X), len(ix))),
         #                                                 numpy.broadcast_to(t_end[ix], (len(X), len(ix))) ], axis=0 ) -   
@@ -460,12 +492,6 @@ class SACCT_data_handler(object):
         #Ns = numpy.sum(IX_t, axis=1)
         Ns = numpy.array([len(rw) for rw in IX_k])
         #
-#         print('*** NCPUS_shape: ',jobs_summary['NCPUS'].shape) 
-#         print('*** len(IX_k): ', Ns[0:5])
-#         print('*** IX_k: ', IX_k[0:5])
-#         print('*** IX?: ', numpy.sum(numpy.logical_and(X[0]>=t_start, X[0]<t_end)))
-#         print('* * * ', X[0])
-#         print('*** IX_where][{}]:: *. {} .*'.format(X[0], list(numpy.where(numpy.logical_and( X.reshape(-1,1)[0] >=t_start, X.reshape(-1,1)[0]<t_end))[1] ) ) )
         #
         # See above; there is a way to do this in full-numpy mode, but it will use most of the memory in the world,
         #.  so probably not reliable even on the HPC... and in fact likely not faster, since the matrices/vectors are
@@ -475,9 +501,8 @@ class SACCT_data_handler(object):
         Ns_cpu = numpy.array([numpy.sum(jobs_summary['NCPUS'][0][kx]) for kx in IX_k])
         # there should be a way to broadcast the array to indices, but I'm not finding it just yet...
         #Ns_cpu = numpy.sum(numpy.broadcast_to(jobs_summary['NCPUS'][0], (len(IX_k),len(jobs_summary) )
-        
-        
         #
+        # Here's the blocked out loop-loop version. Vectorized is much faster.
 #         for j, t in enumerate(X):
 #             ix_t = numpy.logical_and(t_start<=t, t_end>t)
 #             #
@@ -516,7 +541,6 @@ class SACCT_data_handler(object):
         #
         return wait_stats
     #
-    #
     def submit_wait_distribution(self, n_cpu=1):
         n_cpu = numpu.atleast_1d(n_cpu)
         #
@@ -545,20 +569,118 @@ class SACCT_data_handler(object):
         return self.jobs_summary.tofile(output_path,
                                         format='%s{}'.format(delim).join(self.headers), sep=delim)
     #
-    def get_submit_wait_timeofday(self, time_units='hours', qs=[.5, .75, .95]):
+    def get_run_times(self, include_running_jobs=True, IX=None):
+        '''
+        # compute job run times, presumably to compute a distribution.
+        # @include_running_jobs: if True, then set running jobs (End time = nan --> End time = now()
+        # @IX: optional index to subset the data
+        '''
         #
-        # TODO: allow units and modulus choices.
-        #tu={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes',
-        #    'minute':'minutes', 'minutes':'minutes', 
-        #    'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
-        #    
-        #time_units = tu.get(time_units,time_units)
-        #time_units_dict={'days':1., 'hours':24., 'minutes':float(24*60), 'seconds':float(24*3600)}
+        starts = (self.jobs_summary['Start'])[IX].copy()
+        ends   = (self.jobs_summary['End'])[IX].copy()
+        if include_running_jobs:
+            ends[numpy.isnan(ends)]=mpd.date2num(dtm.datetime.now())
+        #
+        ix = numpy.logical_and(numpy.invert(numpy.isnan(starts) ), numpy.invert(numpy.isnan(ends) ) )
+        #
+        return ends[ix] - starts[ix]
+    #
+    def get_submit_compute_vol_timeofday(self, time_units='hours', qs=[.5, .75, .95], time_col='Submit', timelimit_default=None):
+        '''
+        # wait times as a functino fo time-of-day. Compute various quantiles for these values.
+        # @time_units: {hours, days, and somme others}. References class scope time_units_labels consolidation dict and
+        #.   self.time_units_vals{} to get the values for those. Base units are days, so ('hour', 'hours' 'hr') -> 24 (hrs/day)
+        # @qs=[]: quantiles. default, [.5, .75, .95] give s the .5, .75, .95 quantiles.
+        # @time_col: jobs_summary time column. Available columns include ('Submit', 'Start', 'End', 'Eligible'). Will
+        #. default to 'Submit'
+        #
+        # see also get_submit_wait_timeofday()
+        '''
+        #
+        # NOTE: specifying columns...
+        # , Y_cols=['NCPUS', 'Timelimit'])
+        #. it's pretty easy, in principle, to set Y_cols as a user defined parameter, except that each column is likely
+        #. to have its own None/NaN special needs handling requirements. One solution would be to write the more generalized
+        #. handler, and then wrapepr functions to prepare the input arrays.
+        #
+        if timelimit_default is None:
+            timelimit_default = numpy.median((self.jobs_summary['Timelimit'])[numpy.invert(numpy.isnan(self.jobs_summary['Timelimit']))])
+        #
+        if (isinstance(time_units, int) or isinstance(time_units, float) ):
+            u_time = time_units
+        else:
+            time_units = self.time_units_labels.get(time_units,'hours')
+            u_time = self.time_units_vals.get(time_units, 24)
+        #
+        self.get_submit_compute_vol_timeofday_prams=locals().copy()
+        #
+        # do we have a valid time_col? for now, require an exact match. 
+        if not time_col in self.jobs_summary.dtype.names:
+            time_col='Submit'
+        #
+        # get a nan-free index or jobs_summary subset
+        JS=self.jobs_summary[numpy.invert(numpy.isnan(self.jobs_summary[time_col]))]
         #
         #tf = time_units_dict[time_units]
         #
-        X = (self.jobs_summary['Submit']*24.)%24
-        Y = (self.jobs_summary['Start']- self.jobs_summary['Submit'] )*24
+        #X = ( (self.jobs_summary[time_col]*u_time)%u_time).astype(int)
+        X = ( (JS[time_col]*u_time)%u_time).astype(int)
+        
+        X0 = numpy.unique(X)
+        #
+        #timelimit = self.jobs_summary['Timelimit'].copy()
+        timelimit = JS['Timelimit'].copy()
+        timelimit[numpy.isnan(timelimit)]=timelimit_default
+        #
+        #Y = self.jobs_summary['NCPUS']*timelimit
+        Y = JS['NCPUS']*timelimit
+        
+        # this generalized syntax would be nice, except that we need custom NaN handline...
+        # this syntax should work, but sometimes seems to get confused by masks, reference, etc. So
+        #.  maybe better to just to a little bit of Python LC.
+        #Y = numpy.prod(self.jobs_summary[Y_cols], axis=1)
+        #Y = numpy.prod([self.jobs_summary[cl] for cl in Y_cols], axis=0)
+        #
+        # this could be expedited by sorting, then using numpy.searchsorted(), but this syntax is so easy
+        #. and for now, it's fast enough.
+        #quantiles = numpy.array([numpy.quantile(Y[X==j], qs) for j in X0])
+        #means = numpy.array([numpy.mean(Y[X==j]) for j in X0])
+        q_sum = numpy.array([numpy.sum(Y[X==j]) for j in X0])
+        #cpu_sum = numpy.array([numpy.sum(self.jobs_summary['NCPUS'][X==j]) for j in X0])
+        cpu_sum = numpy.array([numpy.sum(JS['NCPUS'][X==j]) for j in X0])
+        #
+        # wrap up in an array:
+        #dts =[('time', '>f8'), ('mean', '>f8')] + [('q{}'.format(q), '>f8') for q in qs]
+        #    
+        #    
+        return numpy.core.records.fromarrays([X0, q_sum, cpu_sum],
+                                      dtype=[('time', '>f8'), ('cpu-time', '>f8'), ('cpus', '>f8')] )
+        #                                     + [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
+        
+    #
+    def get_submit_wait_timeofday(self, time_units='hours', qs=[.5, .75, .95]):
+        '''
+        # wait times as a functino fo time-of-day. Compute various quantiles for these values.
+        # @time_units: {hours, days, and somme others}. References class scope time_units_labels consolidation dict and
+        #.   self.time_units_vals{} to get the values for those. Base units are days, so ('hour', 'hours' 'hr') -> 24 (hrs/day)
+        # @qs=[]: quantiles. default, [.5, .75, .95] give s the .5, .75, .95 quantiles.
+        '''
+        #
+        # TODO: allow units and modulus choices.
+        
+        #
+        # allow a custom, numerical value to be passed for time_units (don't know why you would do this, but...)
+        if (isinstance(time_units, int) or isinstance(time_units, float) ):
+            u_time = time_units
+        else:
+            time_units = self.time_units_labels.get(time_units,'hours')
+            u_time = self.time_units_vals.get(time_units, 24.)
+        #
+        #tf = time_units_dict[time_units]
+        #
+        #X = (self.jobs_summary['Submit']*24.)%24
+        X = (self.jobs_summary['Submit']*u_time)%u_time
+        Y = (self.jobs_summary['Start']- self.jobs_summary['Submit'] )*u_time
         #
         # TODO: we were sorting for a reason, but do we still need to?
         ix = numpy.argsort(X)
@@ -567,7 +689,7 @@ class SACCT_data_handler(object):
         X0 = numpy.unique(X).astype(int)
         #        
         quantiles = numpy.array([numpy.quantile(Y[X==j], qs) for j in X0])
-        
+        #
         #quantiles = numpy.array([numpy.quantile(y[X.astype(int)==int(j)], qs) for j in range(24)])
         #
         # let's do a quick check to see if these numbers are being computed correctly. so
@@ -584,7 +706,8 @@ class SACCT_data_handler(object):
         return numpy.core.records.fromarrays(numpy.append([X0, means], quantiles.T, axis=0),
                                               dtype=[('time', '>f8'), ('mean', '>f8')] +
                                              [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
-
+    #
+    
 class SACCT_data_from_inputs(SACCT_data_handler):
     # a SACCT_data handler that loads input file(s). Most of the time, we don't need the primary
     #. data; we only want the summary data. We'll allow for both, default to summary...
