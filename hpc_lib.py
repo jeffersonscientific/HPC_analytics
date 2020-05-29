@@ -716,3 +716,20 @@ class SACCT_data_from_inputs(SACCT_data_handler):
     #
     def __init__(self, summary_filename=None, primary_data_filename=None):
         pass
+#
+def get_group_users(group_name):
+    # # and get a list of users to construct an index:
+    # $ finger dunham
+    # Login: edunham         Name: Eric Dunham
+    # Directory: /home/edunham             Shell: /bin/bash
+    # Never logged in.
+    # No mail.
+    # No Plan.
+    # [rcwhite@cees-mgmt0 ~]$ id edunham
+    # uid=60367(edunham) gid=100(users) groups=100(users),203(tgp),70137(fs-erd)
+    # [rcwhite@cees-mgmt0 ~]$ getent group | grep tgp
+    # tgp:*:203:ooreilly,kashefi,malmq,axelwang,lwat054,glotto,chao2,bponemon,danmohad,sinux1,
+    # gnava,eliasrh,dennis,zhuwq,yyang85,sbydlon,houyun,cstierns,mrivet,jlmaurer,myoder96,sozawa,schu3,
+    # lbruhat,kallison,labraha2,kcoppess,edunham
+    #
+    return None
