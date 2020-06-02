@@ -9,9 +9,18 @@ import datetime as dtm
 import pytz
 import multiprocessing as mpp
 import pickle
+import json
+#
+import subprocess
+import shlex
 #
 import numba
 import pandas
+#
+mazama_groups_ids = ['tgp', 'sep', 'clab', 'beroza', 'lnt', 'ds', 'nsd', 'oxyvibtest', 'cardamom', 'crustal', 'stress', 'das', 'ess', 'astro', 'seaf', 'oneill', 'modules', 'wheel', 'ds2', 'shanna', 'issm', 'fs-uq-zechner', 'esitstaff', 'itstaff', 'sac-eess164', 'sac-lab', 'sac-lambin', 'sac-lobell', 'fs-bpsm', 'fs-scarp1', 'fs-erd', 'fs-sedtanks', 'fs-sedtanks-ro', 'fs-supria', 'web-rg-dekaslab', 'fs-cdfm', 'suprib', 'cees', 'suckale', 'schroeder', 'thomas', 'ere', 'smart_fields', 'temp', 'mayotte-collab']
+#
+serc_user_ids = ['biondo', 'beroza', 'sklemp', 'harrisgp', 'gorelick', 'edunham', 'sagraham', 'omramom', 'aditis2', 'oneillm', 'jcaers', 'mukerji', 'glucia', 'tchelepi', 'lou', 'segall', 'horne', 'leift']
+user_exclusions = ['myoder96', 'dennis']
 #
 def str2date(dt_str, verbose=0):
     try:
@@ -717,7 +726,7 @@ class SACCT_data_from_inputs(SACCT_data_handler):
     def __init__(self, summary_filename=None, primary_data_filename=None):
         pass
 #
-def get_group_users(group_name):
+def get_group_users(user_id):
     # # and get a list of users to construct an index:
     # $ finger dunham
     # Login: edunham         Name: Eric Dunham
@@ -731,5 +740,85 @@ def get_group_users(group_name):
     # tgp:*:203:ooreilly,kashefi,malmq,axelwang,lwat054,glotto,chao2,bponemon,danmohad,sinux1,
     # gnava,eliasrh,dennis,zhuwq,yyang85,sbydlon,houyun,cstierns,mrivet,jlmaurer,myoder96,sozawa,schu3,
     # lbruhat,kallison,labraha2,kcoppess,edunham
+    #
+    # to get all groups:
+    # $ groups
+    # users tgp sep clab beroza astro oneill modules itstaff suprib cees suckale schroeder thomas ere mayotte-collab
+    #
+    # first, get basic info:
+    # capture_output=True is a later Python version syntax (maybe Python 3.7+ ? Mazama runs 3.6, at least for standard Anaconda).
+    user_info_call_seq = ['id', user_id]
+    #user_info = subprocess.run(user_info_call_seq, capture_output=True)
+    #
+    #print('** input: ', user_info_call_seq)
+    S = subprocess.run(user_info_call_seq, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    #
+    print('*** S.stdout: ', S.stdout.decode() )
+    #
+    S = S.stdout.decode()[:-1].split(chr(32))
+    S = dict([rw.split('=') for rw in S])
+    
+    #
+    return S
+#
+
+def get_resercher_groups_dict():
+    sp_command = 'getent group'
+    #
+    sp = subprocess.run(shlex.split(sp_command), shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    #
+    sp_out = {}
+    for rw in sp.stdout.decode().split('\n'):
+        rws = rw.split(':')
+        if len(rws)<4:
+            continue
+        #
+        if rws[1]!="*":
+            continue
+        #
+        usrs = rws[3].split(',')
+        if len(usrs)==0:
+            continue
+        #
+        for u in user_exclusions:
+            while u in usrs:
+                usrs.remove(u)
+            #
+        #
+        sp_out[rws[0]] = usrs
+    #
+    return sp_out
+    
+
+def get_group_members(group_id):
+    '''
+    # use a subprocess call to getent to get all members of linux group group_id
+    '''
+    #
+    #
+    #sp_command="getent group | grep {}".format(group_id)
+    sp_command = 'getent group'
+    #
+    # NOTE: in order to run a complex linux command, set shell=True. Some will say, however, that this is not recommended for security -- among other, reasons.
+    # https://stackoverflow.com/questions/13332268/how-to-use-subprocess-command-with-pipes
+    # The stackoverflow recommendation is to basically use two subprocesses (in this case, the first for getent, and then pipe the stdout to the stdin of a second
+    #  process. For something simple, I don't see the advantage of that over just doing the grep or other operation in Python, which is a better environment for that
+    #  sort of work anway. The advantage of the piped command is it is only a single call to the OS.
+    #
+    #print('subprocessing with shell=True...')
+    # ...but it still breaks. likely composite subprocesses are not permitted, for security  purposes? make ssens...
+    sp = subprocess.run(shlex.split(sp_command), shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    #
+    
+    
+    #
+    return sp.stdout
+#
+def active_groups_to_json(fout_name='mazama_groups.json'):
+    # TODO: (maybe?) return groups{}, so the user can verify?
+    #groups = get_resercher_groups_dict()
+    #
+    with open(fout_name, 'w') as fout:
+        json.dump(get_resercher_groups_dict(), fout)
     #
     return None
