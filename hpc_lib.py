@@ -822,3 +822,35 @@ def active_groups_to_json(fout_name='mazama_groups.json'):
         json.dump(get_resercher_groups_dict(), fout)
     #
     return None
+#
+def time_bin_aggregates(XY, bin_mod=24, qs=[.25, .5, .75]):
+    # NOTE: this is not quite general purpose. it takes the input%1, then converts the fractional remainder
+    #. (modulus) to an integer(ish) by multiplying. Aka, t%1 gives the remaining fraction of a day (by standard
+    #. python date conventions); (t%1)*24 gives that in hours. But to convert this to DoW, we first have 
+    #. to convert the numerical date to weeks, so we'd want (t-t_0)%7, or we could use this function, but
+    #. pass t=t_days/7., bin_mod=7, and really we'd want to do a phase shif to get DoW correctly.
+    XY=numpy.array(XY)
+    if XY.shape[0]==2:
+        X = XY[0,:]
+        Y = XY[1:]
+    else:
+        X = XY[:,0]
+        Y = XY[:,1]
+    #
+    #X_mod = ((X*bin_mod)%bin_mod).astype(int)
+    X_mod = ((X%1.)*bin_mod).astype(int)
+    #
+    stats_output=[]
+    for x in numpy.unique(X_mod):
+        ix = X_mod==x
+        this_Y = Y[ix]
+        stats_output += [numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
+                                      numpy.quantile(this_Y, qs))]
+    #
+    # TODO: convert this to a structured array. it looks (mostly) just like a record array, but it's not...
+    #.  and it's faster...
+    return numpy.core.records.fromarrays(numpy.array(stats_output).T, dtype=[('x', '>f8'), ('mean', '>f8'),
+                                                        ('stdev', '>f8')] + 
+                                         [('q_{}'.format(q), '>f8') for q in qs])
+#
+
