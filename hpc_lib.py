@@ -468,15 +468,11 @@ class SACCT_data_handler(object):
         #t_end[t_end is None]=numpy.datetime64(t_now)
         #t_end = mpd.date2num(t_end)
         #
-        print('** DEBUG: ', t_end.shape, t_start.shape)
-        #
+        #print('** DEBUG: ', t_end.shape, t_start.shape)
         #
         if t_min is None:
             t_min = numpy.nanmin([t_start, t_end])
         t_max = numpy.nanmax([t_start, t_end])
-        #
-        # can also create X sequence like this, for minute resolution
-        # X = numpy.arange(t_min, t_max, 1./(24*60))
         #
         if bin_size is None:
             X = numpy.linspace(t_min, t_max, n_points)
@@ -493,8 +489,10 @@ class SACCT_data_handler(object):
         # the boolean index gets really big, so it makes sense to also (or alternatively) use an positional index:
         #
         # really a pain to get this to handle an empty set...
+        # use numpy.where() to convert a boolean index to a positional index
         #IX_k = numpy.array([numpy.where(ix) for ix in IX_t])
-        IX_k = [numpy.where(numpy.logical_and(x>=t_start, x<t_end))[1] for x in X]
+        # so... was getting the index in [1], but now getting an index error and test show the indes in [0]...
+        IX_k = [numpy.where(numpy.logical_and(x>=t_start, x<t_end) )[0] for x in X]
         #IX_k = numpy.array([numpy.arange(len(t_start))[numpy.logical_and([x]>=t_start, [x]<t_end)] for x in X])
         #IX_k = numpy.array([[k for k, (t1,t2) in enumerate(zip(t_start, t_end)) if x>=t1 and x<t2] for x in X])
         #        
@@ -507,7 +505,7 @@ class SACCT_data_handler(object):
         #. ver sparse.
         #Ns_cpu = numpy.sum(jobs_summary['NCPUS'][IX_t], axis=1)
         
-        Ns_cpu = numpy.array([numpy.sum(jobs_summary['NCPUS'][0][kx]) for kx in IX_k])
+        Ns_cpu = numpy.array([numpy.sum(jobs_summary['NCPUS'][kx]) for kx in IX_k])
         # there should be a way to broadcast the array to indices, but I'm not finding it just yet...
         #Ns_cpu = numpy.sum(numpy.broadcast_to(jobs_summary['NCPUS'][0], (len(IX_k),len(jobs_summary) )
         #
@@ -829,6 +827,7 @@ def time_bin_aggregates(XY, bin_mod=24, qs=[.25, .5, .75]):
     #. python date conventions); (t%1)*24 gives that in hours. But to convert this to DoW, we first have 
     #. to convert the numerical date to weeks, so we'd want (t-t_0)%7, or we could use this function, but
     #. pass t=t_days/7., bin_mod=7, and really we'd want to do a phase shif to get DoW correctly.
+    #
     XY=numpy.array(XY)
     if XY.shape[0]==2:
         X = XY[0,:]
@@ -839,18 +838,36 @@ def time_bin_aggregates(XY, bin_mod=24, qs=[.25, .5, .75]):
     #
     #X_mod = ((X*bin_mod)%bin_mod).astype(int)
     X_mod = ((X%1.)*bin_mod).astype(int)
+    #X_out = numpy.zeros( (len(numpy.unique(X_mod)), 3+len(qs) ), dtype=[('x', '>f8'), ('mean', '>f8'),
+    #                                                    ('stdev', '>f8')] + 
+    #                                     [('q_{}'.format(q), '>f8') for q in qs])
     #
+    #print('** X_out: ', X_out, X_out.dtype)
+    #print('** shape: ', X_out.shape)
     stats_output=[]
-    for x in numpy.unique(X_mod):
+    for k,x in enumerate(numpy.unique(X_mod) ):
         ix = X_mod==x
         this_Y = Y[ix]
         stats_output += [numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
                                       numpy.quantile(this_Y, qs))]
-    #
+        #
+        # ... I confess that assignment to these structured arrays is baffling me...
+        #X_out[k,:] = numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
+        #                                  numpy.quantile(this_Y, qs))[:]
     # TODO: convert this to a structured array. it looks (mostly) just like a record array, but it's not...
     #.  and it's faster...
-    return numpy.core.records.fromarrays(numpy.array(stats_output).T, dtype=[('x', '>f8'), ('mean', '>f8'),
+#     return numpy.core.records.fromarrays(numpy.array(stats_output).T, dtype=[('x', '>f8'), ('mean', '>f8'),
+#                                                         ('stdev', '>f8')] + 
+#                                          [('q_{}'.format(q), '>f8') for q in qs])
+    #
+    # the syntax for converting a list or array to a structured array still appears to be clunky, but (unless something
+    #. has changed, or depending on the numpy version (??), the performance benefit of structured arrays is significant.
+    #
+    # this works, but is maybe a bit overhead heavy?
+    return numpy.array([tuple(rw) for rw in stats_output], dtype=[('x', '>f8'), ('mean', '>f8'),
                                                         ('stdev', '>f8')] + 
                                          [('q_{}'.format(q), '>f8') for q in qs])
+    return X_out
+
 #
 
