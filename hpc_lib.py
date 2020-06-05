@@ -126,7 +126,7 @@ class SACCT_data_handler(object):
     time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
     #
     #
-    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None):
+    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None, verbose=1):
         #
         if types_dict is None:
             #
@@ -201,9 +201,12 @@ class SACCT_data_handler(object):
             job_ID_index[s] += [k]
         #
         #
+        if verbose:
+            print('Starting jobs_summary...')
         # we should be able to MPP this as well...
         #jobs_summary = numpy.recarray(shape=(len(job_ID_index), self.data.shape[1]), dtype=data.dtype)
-        jobs_summary = numpy.recarray(shape=(len(job_ID_index), ), dtype=data.dtype)
+        #jobs_summary = numpy.recarray(shape=(len(job_ID_index), ), dtype=data.dtype)
+        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
         t_now = mpd.date2num(dtm.datetime.now())
         for k, (j_id, ks) in enumerate(job_ID_index.items()):
             jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
@@ -223,7 +226,8 @@ class SACCT_data_handler(object):
             jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
             jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
         #
-        print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
+        if verbose:
+            print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
         # Compute a job summary table. What columns do we need to aggregate? NCPUS, all the times: Start,
         #. End, Submit, Eligible. Note that the End time of the parent job often terminates before (only
         #. by a few seconds????) the End time of the last step, so we should probably just compute the
@@ -231,10 +235,11 @@ class SACCT_data_handler(object):
         #. max(NCPU)). For performance, we'll do well to not have to do logical, string-like operations --
         #  aka, do algebraic type operations.
         #
-        #jobs_summary = numpy.array()
+        # let's compute this by default...
         #
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        self.cpu_usage = self.active_jobs_cpu()
     #
     #@numba.jit
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
@@ -267,7 +272,7 @@ class SACCT_data_handler(object):
             #delim_lines=fin.readline()
             #
             if verbose:
-                print('*** headers: ', headers)
+                print('*** load data:: headers: ', headers)
             active_headers=headers
             # TODO: it would be a nice performance boost to only work through a subset of the headers...
             #active_headers = [cl for cl in headers if cl in types_dict.keys()]
@@ -430,13 +435,15 @@ class SACCT_data_handler(object):
         #return cpu_h
         #print('*** DB: ', N_ix[0:10])
         #print('*** shapes: ', [numpy.shape(s) for s in [X,X-bin_size, cpu_h, N_ix]])
-        return numpy.core.records.fromarrays([X, X-bin_size, cpu_h, [len(rw) for rw in IX_k]], dtype=[('time', '>f8'), 
+#         return numpy.core.records.fromarrays([X, X-bin_size, cpu_h, [len(rw) for rw in IX_k]], dtype=[('time', '>f8'), 
+#                                                                        ('t_start', '>f8'),
+#                                                                        ('cpu_hours', '>f8'),
+#                                                                        ('N_jobs', '>f8')])
+#         #
+        return numpy.array([tuple(rw) for rw in numpy.array([X, X-bin_size, cpu_h, [len(rw) for rw in IX_k]]).T ], dtype=[('time', '>f8'), 
                                                                        ('t_start', '>f8'),
                                                                        ('cpu_hours', '>f8'),
                                                                        ('N_jobs', '>f8')])
-        #return numpy.core.records.fromarrays([X, cpu_h], dtype=[('time', '>f8'), 
-        #                                                             ('cpu_hours', '>f8')])
-        #return numpy.array([X,cpu_h]).T
     #
     #@numba.jit
     def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None):
@@ -714,6 +721,80 @@ class SACCT_data_handler(object):
                                               dtype=[('time', '>f8'), ('mean', '>f8')] +
                                              [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
     #
+    #
+    # figures and reports:
+    def active_cpu_jobs__per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10), cpu_usage=None):
+        '''
+        # 2x3 figure of instantaneous usage (active cpus, jobs per day, week)
+        '''
+        if cpu_usage is None:
+            cpu_usage = self.cpu_usage
+        #
+        fg = plt.figure(figsize=figsize)
+        #
+        ax1 = fg.add_subplot('231')
+        ax2 = fg.add_subplot('232')
+        ax3 = fg.add_subplot('233')
+        ax4 = fg.add_subplot('234')
+        ax5 = fg.add_subplot('235')
+        ax6 = fg.add_subplot('236')
+        axs = [ax1, ax2, ax3, ax4, ax5, ax6]
+        [ax.grid() for ax in axs]
+        #
+        #qs = [.45, .5, .55]
+        qs_s = ['q_{}'.format(q) for q in qs]
+        print('*** qs_s: ', qs_s)
+
+        cpu_hourly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time'], 
+                                                         cpu_usage['N_cpu']]).T, qs=qs)
+        jobs_hourly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time'],
+                                                          cpu_usage['N_jobs']]).T, qs=qs)
+        #
+        cpu_weekly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
+                                                         cpu_usage['N_cpu']]).T, bin_mod=7., qs=qs)
+        jobs_weekly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
+                                                          cpu_usage['N_jobs']]).T, bin_mod=7., qs=qs)
+        #
+        ix_pst = numpy.argsort( (jobs_hourly['x']-7)%24)
+        #
+        hh1 = ax1.hist(sorted(cpu_usage['N_jobs'])[0:int(1.0*len(cpu_usage))], bins=25, cumulative=False)
+        ax2.plot(jobs_hourly['x'], jobs_hourly['mean'], ls='-', marker='o', label='PST')
+        ax2.plot((jobs_hourly['x']), jobs_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
+        ax3.plot(jobs_weekly['x'], jobs_weekly['q_0.5'], ls='-', marker='o', color='b')
+        ax3.plot(jobs_weekly['x'], jobs_weekly['mean'], ls='--', marker='', color='b')
+        ax3.fill_between(jobs_weekly['x'], jobs_weekly[qs_s[0]], jobs_weekly[qs_s[-1]],
+                         alpha=.1, zorder=1, color='b')
+        #
+        #
+        hh4 = ax4.hist(cpu_usage['N_cpu'], bins=25)
+        ax5.plot(cpu_hourly['x'], cpu_hourly['mean'], ls='-', marker='o', label='PST')
+        ax5.plot( (cpu_hourly['x']), cpu_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
+        ax6.plot(cpu_weekly['x'], cpu_weekly['q_0.5'], ls='-', marker='o', color='b')
+        ax6.plot(cpu_weekly['x'], cpu_weekly['mean'], ls='--', marker='', color='b')
+        #
+        # TODO: can we simplyfy this qs syntax?
+        ax6.fill_between(cpu_weekly['x'], cpu_weekly[qs_s[0]], cpu_weekly[qs_s[-1]], alpha=.1, zorder=1, color='b')
+        #
+        #ax1.set_ylim(-5., 200)
+        ax1.set_title('$N_{jobs}$ Histogrm', size=16)
+        ax2.set_title('Hour-of-day job counts', size=16)
+        ax3.set_title('Day-of-week job counts', size=16)
+        #
+        ax4.set_title('$N_{cpu}$ Histogram', size=16)
+        ax5.set_title('Hour-of-day CPU counts', size=16)
+        ax6.set_title('Day-of-week CPU counts', size=16)
+        #
+        ax5.set_xlabel('Hour of Day (PST)')
+        plt.suptitle('Instantaneous Usage ', size=16)
+        #
+        ax2.legend(loc=0)
+        ax5.legend(loc=0)
+        #
+        for ax in (ax3, ax6):
+            ax.set_xticklabels(['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+        #
+        return {'cpu_hourly':cpu_hourly, 'jobs_hourly':jobs_hourly, 'cpu_weekly':cpu_weekly, 'jobs_weekly':jobs_weekly}
+
     
 class SACCT_data_from_inputs(SACCT_data_handler):
     # a SACCT_data handler that loads input file(s). Most of the time, we don't need the primary
