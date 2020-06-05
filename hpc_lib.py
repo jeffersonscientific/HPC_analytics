@@ -137,7 +137,8 @@ class SACCT_data_handler(object):
             #dtm_handler = str2date_num
             types_dict=self.default_types_dict
         #
-        n_cpu = (n_cpu or mpp.cpu_count() )
+        #n_cpu = (n_cpu or mpp.cpu_count() )
+        n_cpu = (n_cpu or 8)
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
@@ -352,10 +353,13 @@ class SACCT_data_handler(object):
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
                     for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
     #
-    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None):
+    @numba.jit
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None):
         '''
         # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
         #. but it should be manageable).
+        # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
+        #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
         '''
         #
         t_now = mpd.date2num( dtm.datetime.now() )
@@ -363,7 +367,8 @@ class SACCT_data_handler(object):
         # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something) 
         #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
         #. ARY[col][k] --> (ARY[col][0])[k]
-        jobs_summary = self.jobs_summary[IX]
+        if jobs_summary is None:
+            jobs_summary = self.jobs_summary[IX]
         #
         # been wrestling with datetime types, as usual, so eventually decided maybe to just
         #. use floats?
@@ -375,7 +380,7 @@ class SACCT_data_handler(object):
         #
         t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
         #
-        print('** DEBUG: ', t_end.shape, t_start.shape)
+        print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
         #
         #
         if t_min is None:
