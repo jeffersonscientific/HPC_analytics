@@ -822,3 +822,4 @@ def active_groups_to_json(fout_name='mazama_groups.json'):
         json.dump(get_resercher_groups_dict(), fout)
     #
     return None
+≈ß
