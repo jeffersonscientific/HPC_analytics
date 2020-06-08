@@ -17,6 +17,13 @@ import shlex
 import numba
 import pandas
 #
+# TODO: so... do we keep our plotting routines separate, or do we just make sure we use... uhh? (double check this)
+# matplotlib.use('Agg')
+#. load this first, so on an HPC primary 
+import pylab as plt
+#
+# TODO: move group_ids, and local-specific things like that to site-specific  modules or data files.
+#
 mazama_groups_ids = ['tgp', 'sep', 'clab', 'beroza', 'lnt', 'ds', 'nsd', 'oxyvibtest', 'cardamom', 'crustal', 'stress', 'das', 'ess', 'astro', 'seaf', 'oneill', 'modules', 'wheel', 'ds2', 'shanna', 'issm', 'fs-uq-zechner', 'esitstaff', 'itstaff', 'sac-eess164', 'sac-lab', 'sac-lambin', 'sac-lobell', 'fs-bpsm', 'fs-scarp1', 'fs-erd', 'fs-sedtanks', 'fs-sedtanks-ro', 'fs-supria', 'web-rg-dekaslab', 'fs-cdfm', 'suprib', 'cees', 'suckale', 'schroeder', 'thomas', 'ere', 'smart_fields', 'temp', 'mayotte-collab']
 #
 serc_user_ids = ['biondo', 'beroza', 'sklemp', 'harrisgp', 'gorelick', 'edunham', 'sagraham', 'omramom', 'aditis2', 'oneillm', 'jcaers', 'mukerji', 'glucia', 'tchelepi', 'lou', 'segall', 'horne', 'leift']
@@ -353,8 +360,8 @@ class SACCT_data_handler(object):
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
                     for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
     #
-    @numba.jit
-    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None):
+    #@numba.jit
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
         '''
         # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
         #. but it should be manageable).
@@ -368,15 +375,25 @@ class SACCT_data_handler(object):
         #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
         #. ARY[col][k] --> (ARY[col][0])[k]
         if jobs_summary is None:
+            # this actually is not working. having problems, i think, with multiple layers of indexing. we
+            #. could try to trap this, or for now just force the calling side to handle it? I think we just have to make
+            # a copy of the data...
             jobs_summary = self.jobs_summary[IX]
+            #jobs_summary = self.jobs_summary
+            
+            
         #
+        # TODO: a little confused by the rank of t_start, t_end. maybe it changes when there is an index? But
+        #. it looks like (for some reason) it was coming out rank 2, like (1,n), but it should not, but when I pass
+        #. an index, it seems to be (properly) rank 1... not sure quite whats happening...
         # been wrestling with datetime types, as usual, so eventually decided maybe to just
         #. use floats?
-        #t_start = self.jobs_summary['Start']
+        #t_start = jobs_summary['Start']
         t_start = jobs_summary['Start'][0]
         #
-        #t_end = self.jobs_summary['End']
+        #t_end = jobs_summary['End']
         t_end = jobs_summary['End'][0]
+        print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
         #
         t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
         #
@@ -394,14 +411,16 @@ class SACCT_data_handler(object):
         #
         # in steps
         #IX_t = numpy.array([numpy.logical_and(t_start<=t, t_end>t) for t in X])
-        print('*** debug: starting IX_k')
+        if verbose:
+            print('*** debug: starting IX_k')
         #
         #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
         IX_k = [numpy.where(numpy.logical_and(x>=t_start, (x-bin_size)<t_end))[0] for x in X]
         N_ix = numpy.array([len(rw) for rw in IX_k])
-        #print('*** DEBUG: IX_k.shape: ', IX_k.shape)
-        print('*** DEBUG: IX_K:: ', IX_k[0:5])
-        print('*** DEBUG: IX_k[0]: ', IX_k[0], type(IX_k[0]))
+        #
+        if verbose:
+            print('*** DEBUG: IX_K:: ', IX_k[0:5])
+            print('*** DEBUG: IX_k[0]: ', IX_k[0], type(IX_k[0]))
         #
         # find empty sets: sum(bool)=0
         #Ns_ix = numpy.sum(IX_t, axis=1).astype(int)
@@ -409,10 +428,17 @@ class SACCT_data_handler(object):
         #
         #cpu_h[Ns_ix==0] = 0.
         #cpu_h = numpy.sum( numpy.min([X.reshape(-1,1), t_end[IX_k]] ) - numpy.max([(X-bin_size).reshape(-1,1), t_start[IX_k]] ) , axis=1)
-        cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(ix))*x, t_end[ix]], axis=0) - 
-                           numpy.max([numpy.ones(len(ix))*(x-bin_size), t_start[ix]], axis=0))*(jobs_summary['NCPUS'][0])[ix] )
-                           for x,ix in zip(X, IX_k)])
-        # convert to hours:
+        #zz = [t_end[jx] for x,jx in zip(X, IX_k)]
+        #zz = [t_start[jx] for x,jx in zip(X, IX_k)]
+        #zz = [(jobs_summary['NCPUS'][0]) for x,jx in zip(X, IX_k)]
+        
+        cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(jx))*x, t_end[jx]], axis=0) - 
+                           numpy.max([numpy.ones(len(jx))*(x-bin_size), t_start[jx]], axis=0))*(jobs_summary['NCPUS'][0])[jx] )
+                           for x,jx in zip(X, IX_k) ])
+#         cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(jx))*x, t_end[jx]], axis=0) - 
+#                            numpy.max([numpy.ones(len(jx))*(x-bin_size), t_start[jx]], axis=0))*(jobs_summary['NCPUS'])[jx] )
+#                            for x,jx in zip(X, IX_k) if len(jx)>0 ])
+#         # convert to hours:
         cpu_h*=24.
                                       
         #cpu_h = numpy.sum([numpy.min([numpy.broadcast_to(X.reshape(-1,1), (len(X), len(ix))),
@@ -458,6 +484,13 @@ class SACCT_data_handler(object):
         # @t_min: start time (aka, bin phase).
         # @ix: an index, aka user=my_user
         '''
+        #
+        # try to trap for an empty set. ix can be booldan (len(ix)==len(data) ) or positional (len(ix) = len(subset) ).
+        #. we can trap an all-false (empty) boolean index as sum(ix)==0 or a positonal index like len(x)==0,
+        #. but there are corner cases to trying to trap both efficiently. so let's just trap positional cases for now.
+        if (not ix is None) and len(ix)==0:
+            #return numpy.array([(0.),(0.),(0.)], dtype=[('time', '>f8'), 
+            return numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
         #
         #
         t_now = mpd.date2num( dtm.datetime.now() )
@@ -728,7 +761,7 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
-    def active_cpu_jobs__per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10), cpu_usage=None):
+    def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10), cpu_usage=None):
         '''
         # 2x3 figure of instantaneous usage (active cpus, jobs per day, week)
         '''
@@ -748,16 +781,16 @@ class SACCT_data_handler(object):
         #
         #qs = [.45, .5, .55]
         qs_s = ['q_{}'.format(q) for q in qs]
-        print('*** qs_s: ', qs_s)
+        #print('*** qs_s: ', qs_s)
 
-        cpu_hourly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time'], 
+        cpu_hourly = time_bin_aggregates(XY=numpy.array([cpu_usage['time'], 
                                                          cpu_usage['N_cpu']]).T, qs=qs)
-        jobs_hourly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time'],
+        jobs_hourly = time_bin_aggregates(XY=numpy.array([cpu_usage['time'],
                                                           cpu_usage['N_jobs']]).T, qs=qs)
         #
-        cpu_weekly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
+        cpu_weekly = time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
                                                          cpu_usage['N_cpu']]).T, bin_mod=7., qs=qs)
-        jobs_weekly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
+        jobs_weekly = time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
                                                           cpu_usage['N_jobs']]).T, bin_mod=7., qs=qs)
         #
         ix_pst = numpy.argsort( (jobs_hourly['x']-7)%24)
