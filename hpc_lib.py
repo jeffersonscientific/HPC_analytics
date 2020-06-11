@@ -1125,7 +1125,7 @@ class SACCT_groups_analyzer_report(object):
                 try:
                     lbls = [simple_date_string(mpd.num2date( float(s.get_text())) ) for s in ax.get_xticklabels()]
                 except:
-                    print('** WARNING: failed writing date text labels:: {}'.format(lbls = "[simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]" ))
+                    print('** WARNING: failed writing date text labels:: {}'.format('lbls = "[simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]" '))
                     print('"*** SysInfo: {}'.format(sys.exc_info()[0]))
                     print('*** trying to write x-ticks with failsafe mmpd.num2date(max(1, float(s.get_text())) )')
                     lbls = [simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]
