@@ -1,5 +1,7 @@
 # functions, classes, and other helper bits for HPC_analytics notebooks and other libs.
 #
+import os
+import sys
 import numpy
 import scipy
 #import matplotlib
@@ -17,10 +19,18 @@ import shlex
 import numba
 import pandas
 #
+# TODO: so... do we keep our plotting routines separate, or do we just make sure we use... uhh? (double check this)
+# matplotlib.use('Agg')
+#. load this first, so on an HPC primary 
+import pylab as plt
+#
+# TODO: move group_ids, and local-specific things like that to site-specific  modules or data files.
+#
 mazama_groups_ids = ['tgp', 'sep', 'clab', 'beroza', 'lnt', 'ds', 'nsd', 'oxyvibtest', 'cardamom', 'crustal', 'stress', 'das', 'ess', 'astro', 'seaf', 'oneill', 'modules', 'wheel', 'ds2', 'shanna', 'issm', 'fs-uq-zechner', 'esitstaff', 'itstaff', 'sac-eess164', 'sac-lab', 'sac-lambin', 'sac-lobell', 'fs-bpsm', 'fs-scarp1', 'fs-erd', 'fs-sedtanks', 'fs-sedtanks-ro', 'fs-supria', 'web-rg-dekaslab', 'fs-cdfm', 'suprib', 'cees', 'suckale', 'schroeder', 'thomas', 'ere', 'smart_fields', 'temp', 'mayotte-collab']
 #
 serc_user_ids = ['biondo', 'beroza', 'sklemp', 'harrisgp', 'gorelick', 'edunham', 'sagraham', 'omramom', 'aditis2', 'oneillm', 'jcaers', 'mukerji', 'glucia', 'tchelepi', 'lou', 'segall', 'horne', 'leift']
 user_exclusions = ['myoder96', 'dennis']
+group_exclusions = ['modules']
 #
 def str2date(dt_str, verbose=0):
     try:
@@ -355,8 +365,8 @@ class SACCT_data_handler(object):
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
                     for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
     #
-    @numba.jit
-    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None):
+    #@numba.jit
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
         '''
         # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
         #. but it should be manageable).
@@ -370,19 +380,43 @@ class SACCT_data_handler(object):
         #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
         #. ARY[col][k] --> (ARY[col][0])[k]
         if jobs_summary is None:
-            jobs_summary = self.jobs_summary[IX]
+            # this actually is not working. having problems, i think, with multiple layers of indexing. we
+            #. could try to trap this, or for now just force the calling side to handle it? I think we just have to make
+            # a copy of the data...
+            jobs_summary = self.jobs_summary
+            #jobs_summary = self.jobs_summary
+        if verbose:
+            print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
+        # NOTE: passing a None index appears to have a null effect -- just returns the whole array, but id does not.
+        #  when we pass None as an index, the columns are returned with elevated rank. aka,
+        #  (X[None])[col].shape == (1, n)
+        #  (X[col].shape == (n,)
+        #  (X[ix])[col].shape == (n,)
+        if not IX is None:
+            jobs_summary = jobs_summary[IX]
         #
-        # been wrestling with datetime types, as usual, so eventually decided maybe to just
-        #. use floats?
-        #t_start = self.jobs_summary['Start']
-        t_start = jobs_summary['Start'][0]
+        if verbose:
+            print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
         #
-        #t_end = self.jobs_summary['End']
-        t_end = jobs_summary['End'][0]
+        if len(jobs_summary)==0:
+            return numpy.array([], dtype=[('time', '>f8'),
+            ('t_start', '>f8'),
+            ('cpu_hours', '>f8'),
+            ('N_jobs', '>f8')])
+        #
+        # NOTE: See above discussion RE: [None] index and array column rank.
+        t_start = jobs_summary['Start']
+        #t_start = jobs_summary['Start'][0]
+        #
+        t_end = jobs_summary['End']
+        #t_end = jobs_summary['End'][0]
+        if verbose:
+            print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
         #
         t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
         #
-        print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
+        if verbose:
+            print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
         #
         #
         if t_min is None:
@@ -396,35 +430,25 @@ class SACCT_data_handler(object):
         #
         # in steps
         #IX_t = numpy.array([numpy.logical_and(t_start<=t, t_end>t) for t in X])
-        print('*** debug: starting IX_k')
+        if verbose:
+            print('*** debug: starting IX_k')
         #
         #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
         IX_k = [numpy.where(numpy.logical_and(x>=t_start, (x-bin_size)<t_end))[0] for x in X]
         N_ix = numpy.array([len(rw) for rw in IX_k])
-        #print('*** DEBUG: IX_k.shape: ', IX_k.shape)
-        print('*** DEBUG: IX_K:: ', IX_k[0:5])
-        print('*** DEBUG: IX_k[0]: ', IX_k[0], type(IX_k[0]))
         #
-        # find empty sets: sum(bool)=0
-        #Ns_ix = numpy.sum(IX_t, axis=1).astype(int)
-        #print('*** debug: ', Ns_ix.shape)
+        if verbose:
+            print('*** DEBUG: IX_K:: ', IX_k[0:5])
+            print('*** DEBUG: IX_k[0]: ', IX_k[0], type(IX_k[0]))
         #
-        #cpu_h[Ns_ix==0] = 0.
-        #cpu_h = numpy.sum( numpy.min([X.reshape(-1,1), t_end[IX_k]] ) - numpy.max([(X-bin_size).reshape(-1,1), t_start[IX_k]] ) , axis=1)
-        cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(ix))*x, t_end[ix]], axis=0) - 
-                           numpy.max([numpy.ones(len(ix))*(x-bin_size), t_start[ix]], axis=0))*(jobs_summary['NCPUS'][0])[ix] )
-                           for x,ix in zip(X, IX_k)])
-        # convert to hours:
+        cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(jx))*x, t_end[jx]], axis=0) - 
+                           numpy.max([numpy.ones(len(jx))*(x-bin_size), t_start[jx]], axis=0))*(jobs_summary['NCPUS'])[jx] )
+                           for x,jx in zip(X, IX_k) ])
+#         # convert to hours:
         cpu_h*=24.
-                                      
-        #cpu_h = numpy.sum([numpy.min([numpy.broadcast_to(X.reshape(-1,1), (len(X), len(ix))),
-        #                                                 numpy.broadcast_to(t_end[ix], (len(X), len(ix))) ], axis=0 ) -   
-        #                   numpy.max( [ numpy.broadcast_to( (X-bin_size).reshape(-1,1), (len(X), len(ix))),
-        #                               numpy.broadcast_to(t_start[ix], (len(X), len(ix))) ], axis=0 )
-        #                  for ix in IX_k], axis=1)
         #
-        
-        print('*** ', cpu_h.shape)
+        if verbose:
+            print('*** ', cpu_h.shape)
         #
 #         for k,t in enumerate(X):
 #             ix_t = numpy.logical_and(t_start<=t, t_end>(t-bin_size) )
@@ -453,7 +477,7 @@ class SACCT_data_handler(object):
                                                                        ('N_jobs', '>f8')])
     #
     #@numba.jit
-    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None):
+    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, verbose=0):
         '''
         # @n_points: number of points in returned time series.
         # @bin_size: size of bins. This will override n_points
@@ -461,10 +485,22 @@ class SACCT_data_handler(object):
         # @ix: an index, aka user=my_user
         '''
         #
+        # try to trap for an empty set. ix can be booldan (len(ix)==len(data) ) or positional (len(ix) = len(subset) ).
+        #. we can trap an all-false (empty) boolean index as sum(ix)==0 or a positonal index like len(x)==0,
+        #. but there are corner cases to trying to trap both efficiently. so let's just trap positional cases for now.
+        null_return = lambda: numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
+        if (not ix is None) and len(ix)==0:
+            #return numpy.array([(0.),(0.),(0.)], dtype=[('time', '>f8'), 
+            #return numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
+            return null_return()
+        #
         #
         t_now = mpd.date2num( dtm.datetime.now() )
         #
         jobs_summary = self.jobs_summary[ix]
+        #
+        if len(jobs_summary)==0:
+            return null_return()
         #
         # been wrestling with datetime types, as usual, so eventually decided maybe to just
         #. use floats?
@@ -476,16 +512,23 @@ class SACCT_data_handler(object):
         
         #t_end[t_end is None] = numpy.datetime64(t_now)
         t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
-        #t_end = mpd.datestr2num(numpy.datetime_as_string(self.jobs_summary['End']))
         #
-        #t_end = self.jobs_summary['End'].astype(dtm.datetime)
-        #t_end[t_end is None]=numpy.datetime64(t_now)
-        #t_end = mpd.date2num(t_end)
         #
         #print('** DEBUG: ', t_end.shape, t_start.shape)
         #
         if t_min is None:
             t_min = numpy.nanmin([t_start, t_end])
+        #
+        print('** DEBUG: shapes:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
+        if len(t_start)==1:
+            print('** ** **: t_start, t_end: ', t_start, t_end)
+        #
+        # catch an empty set:
+        # OR or AND condition???
+        if len(t_start)==0 or len(t_end)==0:
+            print('Exception: no data:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
+            return null_return()
+        #
         t_max = numpy.nanmax([t_start, t_end])
         #
         if bin_size is None:
@@ -506,19 +549,20 @@ class SACCT_data_handler(object):
         # use numpy.where() to convert a boolean index to a positional index
         #IX_k = numpy.array([numpy.where(ix) for ix in IX_t])
         # so... was getting the index in [1], but now getting an index error and test show the indes in [0]...
-        IX_k = [numpy.where(numpy.logical_and(x>=t_start, x<t_end) )[0] for x in X]
+        IX_k = [numpy.where(numpy.logical_and(x>=t_start, x<=t_end) )[0] for x in X]
         #IX_k = numpy.array([numpy.arange(len(t_start))[numpy.logical_and([x]>=t_start, [x]<t_end)] for x in X])
         #IX_k = numpy.array([[k for k, (t1,t2) in enumerate(zip(t_start, t_end)) if x>=t1 and x<t2] for x in X])
-        #        
+        #
+        # NOTE: be sure we know if we're using boolean or positional indices. Note we could make this more robust (tolerant, and correct) for both by doing
+        #  something like, len(jobs_summary[{any_col}][rw] , but skipping the broadcast should give us a significant performance boost.
         #Ns = numpy.sum(IX_t, axis=1)
         Ns = numpy.array([len(rw) for rw in IX_k])
-        #
         #
         # See above; there is a way to do this in full-numpy mode, but it will use most of the memory in the world,
         #.  so probably not reliable even on the HPC... and in fact likely not faster, since the matrices/vectors are
         #. ver sparse.
         #Ns_cpu = numpy.sum(jobs_summary['NCPUS'][IX_t], axis=1)
-        
+        #
         Ns_cpu = numpy.array([numpy.sum(jobs_summary['NCPUS'][kx]) for kx in IX_k])
         # there should be a way to broadcast the array to indices, but I'm not finding it just yet...
         #Ns_cpu = numpy.sum(numpy.broadcast_to(jobs_summary['NCPUS'][0], (len(IX_k),len(jobs_summary) )
@@ -537,6 +581,7 @@ class SACCT_data_handler(object):
                                                                      ('N_cpu', '>f8')])
     #
     def get_wait_stats(self):
+        # TODO: revise this to use a structured array, not a recarray.
         wait_stats = numpy.core.records.fromarrays(numpy.zeros((len(self.jobs_summary), 6)).T,
                                                    dtype=[('ncpus', '>i8'), ('mean', '>f8'), 
                                                                         ('median', '>f8'),  ('stdev', '>f8'),
@@ -730,7 +775,8 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
-    def active_cpu_jobs__per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10), cpu_usage=None):
+    def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10),
+     cpu_usage=None, verbose=0, foutname=None):
         '''
         # 2x3 figure of instantaneous usage (active cpus, jobs per day, week)
         '''
@@ -750,22 +796,22 @@ class SACCT_data_handler(object):
         #
         #qs = [.45, .5, .55]
         qs_s = ['q_{}'.format(q) for q in qs]
-        print('*** qs_s: ', qs_s)
+        #print('*** qs_s: ', qs_s)
 
-        cpu_hourly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time'], 
+        cpu_hourly = time_bin_aggregates(XY=numpy.array([cpu_usage['time'], 
                                                          cpu_usage['N_cpu']]).T, qs=qs)
-        jobs_hourly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time'],
+        jobs_hourly = time_bin_aggregates(XY=numpy.array([cpu_usage['time'],
                                                           cpu_usage['N_jobs']]).T, qs=qs)
         #
-        cpu_weekly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
+        cpu_weekly = time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
                                                          cpu_usage['N_cpu']]).T, bin_mod=7., qs=qs)
-        jobs_weekly = hpc_lib.time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
+        jobs_weekly = time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
                                                           cpu_usage['N_jobs']]).T, bin_mod=7., qs=qs)
         #
         ix_pst = numpy.argsort( (jobs_hourly['x']-7)%24)
         #
         hh1 = ax1.hist(sorted(cpu_usage['N_jobs'])[0:int(1.0*len(cpu_usage))], bins=25, cumulative=False)
-        ax2.plot(jobs_hourly['x'], jobs_hourly['mean'], ls='-', marker='o', label='PST')
+        #ax2.plot(jobs_hourly['x'], jobs_hourly['mean'], ls='-', marker='o', label='PST')
         ax2.plot((jobs_hourly['x']), jobs_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
         ax3.plot(jobs_weekly['x'], jobs_weekly['q_0.5'], ls='-', marker='o', color='b')
         ax3.plot(jobs_weekly['x'], jobs_weekly['mean'], ls='--', marker='', color='b')
@@ -774,7 +820,7 @@ class SACCT_data_handler(object):
         #
         #
         hh4 = ax4.hist(cpu_usage['N_cpu'], bins=25)
-        ax5.plot(cpu_hourly['x'], cpu_hourly['mean'], ls='-', marker='o', label='PST')
+        #ax5.plot(cpu_hourly['x'], cpu_hourly['mean'], ls='-', marker='o', label='PST')
         ax5.plot( (cpu_hourly['x']), cpu_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
         ax6.plot(cpu_weekly['x'], cpu_weekly['q_0.5'], ls='-', marker='o', color='b')
         ax6.plot(cpu_weekly['x'], cpu_weekly['mean'], ls='--', marker='', color='b')
@@ -800,6 +846,13 @@ class SACCT_data_handler(object):
         for ax in (ax3, ax6):
             ax.set_xticklabels(['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
         #
+        if not foutname is None:
+            pth,nm = os.path.split(foutname)
+            if not os.path.isdir(pth):
+                os.makedirs(pth)
+            #
+            plt.savefig(foutname)
+        #
         return {'cpu_hourly':cpu_hourly, 'jobs_hourly':jobs_hourly, 'cpu_weekly':cpu_weekly, 'jobs_weekly':jobs_weekly}
 
     
@@ -811,6 +864,317 @@ class SACCT_data_from_inputs(SACCT_data_handler):
     #
     def __init__(self, summary_filename=None, primary_data_filename=None):
         pass
+#
+class Tex_Slides(object):
+    def __init__(self, template_json='tex_components/EARTH_Beamer_template.json',
+                 Short_title='', Full_title='Title',
+               author='Mark R. Yoder, Ph.D.',
+               institution='Stanford University, School of Earth', institution_short='Stanford EARTH',
+              email='mryoder@stanford.edu', foutname='output/HPC_analytics/HPC_analytics.tex',
+              project_tex=None ):
+        #
+        # TODO: test saving/reloading presentation_tex. A lso, save inputs, so we can completely reload
+        #  an object? Something like Tex_Slides_Obj.json: {project_tex:{}, input_prams:{}}
+        #
+        # TODO: accept project.json input. this will require handling automated initialization bits, like
+        #  (not) automatically computing the header and title sections. it probably makes sense to do all
+        #  of that during render() anyway.
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+        #
+        # TODO: add an index. handle user content and ordering with this index. it's separate from
+        #. the content dictionary; something simple like [[k, key_k]]. We can nest both in a
+        #  JSON format, so we'll load tex_template like, tex_templates=json.load(fin)['templates']
+        #  ... but for now, let's not worry about order.
+        #
+        output_path, output_fname = os.path.split(foutname)
+        if not os.path.isdir(output_path):
+            os.makedirs(output_path)
+        #
+        #
+        with open(template_json, 'r') as fin:
+            self.tex_templates=json.load(fin)
+        #self.header = self.get_header()
+        #self.title = self.get_title(Short_title=Short_title, Full_title=Full_title,
+        #      author=author, institution=institution, institution_short=institution_short,
+        #      email=email )
+        #
+        # a dict/json object containing the tex components.
+        if not project_tex is None:
+            if isinstance(project_tex, str):
+                # assume it's a filepath:
+                with open(project_tex, 'r') as fin:
+                    project_tex=json.load(fin)
+            #
+        else:
+            project_tex={}
+        #
+        # TODO: for a more generalized, data-structured approach, consider a loop with a X[ky]=X.get(ky, f(ky) ) type instruction.
+        if not 'header' in project_tex.keys():
+            project_tex['header'] = self.get_header()
+        if not 'title' in project_tex.keys():
+            project_tex['title'] = self.get_title(Short_title=Short_title, Full_title=Full_title,
+            author=author, institution=institution, institution_short=institution_short,
+            email=email )
+        #self.project_tex={'header':self.get_header(), 'title':self.get_title(Short_title=Short_title, Full_title=Full_title,
+        #      author=author, institution=institution, institution_short=institution_short,
+        #      email=email )}
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+    #
+    @property
+    def header(self):
+        return self.project_tex['header']
+    #
+    @property
+    def title(self):
+        return self.project_tex['title']
+    #
+    #
+    def get_header(self):
+        return self.tex_templates['header']
+
+    def get_title(self, Short_title=None, Full_title=None,
+           author=None, institution=None, institution_short=None, email=None ):
+        '''
+        # gets title information from json file
+        '''
+        #
+        return self.tex_templates['title'].format(Short_title=Short_title, Full_title=Full_title, author=author,
+                                    institution=institution, institution_short=institution_short,
+                                             email=email)
+    #
+    def add_fig_slide(self, fig_title='Figure', width='.8', fig_path=''):
+        #
+        # fig_title (aka \frametitle{} ) will complain if it gets an underscore. The "proper" way to write an aunderscore is, \textunderscore, but "\_" should work with
+        #  newer versions of latex. I also sometimes just replace "_" -> "-". handing this bluntly here may be a problem, since shouldn't we be able to use a forumula
+        #  as a title??? So we shold probably be rigorous and confirm that "_" is (not) wrapped in "$", or handle it on the input side... For now, let's handle the input.
+        #  Anyway, we need this to be smart enough to handle corrected input (aka, modify "_" but not "\_")
+        self.project_tex['slide_{}'.format(len(self.project_tex))] = self.tex_templates['figslide'].format(fig_title=fig_title, width=width, fig_path=fig_path)
+        
+    #
+    def save_presentation_tex(self, foutname="my_presentation.json"):
+        with open(foutname, 'w') as fout:
+            json.dump(project_tex, fout)
+        #
+    #
+    def render(self, foutname=None):
+        if foutname is None:
+            foutname=self.foutname
+        #
+        output_path, fname = os.path.split(foutname)
+        if not os.path.isdir(output_path):
+            os.makedirs(output_path)
+        #####
+        #
+        with open(foutname, 'w') as fout:
+            fout.write(self.header)
+            fout.write('\n')
+            fout.write(self.title)
+            #
+            fout.write('\n\n\\begin{document}\n\n')
+            #
+            fout.write("\\begin{frame}\n\\titlepage\n\\end{frame}\n\n")
+            #
+            for ky,val in self.project_tex.items():
+                if ky in ('header', 'title'):
+                    continue
+                #
+                print('** adding slide: {}'.format(ky))
+                #
+                fout.write("\n{}\n".format(val))
+            #
+            fout.write('\n\n\\end{document}\n\n')
+        #
+        # not working yet...
+        # pdflatex command should be something like:
+        #  pdflatex -synctex=1 -interaction=nonstopmode -output-directory=output/HPC_analytics output/HPC_analytics/HPC_analytics.tex
+        # ... but the paths need to be handled more carefully. consider constructing full paths to figs.
+        #
+        #pdf_latex_out = subprocess.run(['pdftex', '-output-directory', output_path, foutname], cwd=None)
+        self.pdf_latex_out = subprocess.run(['pdflatex',  fname], cwd=output_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        #print('*** pdf_latex status: ', self.pdf_latex_out)
+        
+    #
+#######
+class SACCT_groups_analyzer_report(object):
+
+    def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
+                 out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', groups=None,
+                 add_all_groups=True,
+                 fig_width='.8', qs=[.45, .5, .55], SACCT_obj=None, max_rws=None, group_exclusions=group_exclusions ):
+        #
+        self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
+        #print('*** DEBUG: __init__: {}'.format(self.out_path))
+        #
+        self.make_report()
+        
+    
+    def make_report(self, out_path=None, tex_filename=None, qs=None, max_rws=None, fig_width=None, verbose=1):
+
+        # make some slides, including all the breakdown.
+        # TODO: wrap this up into a class or function in HPC_lib.
+        # inputs: SACCT_data_handler object, groups-dict/JSON,  output_path, cosmetics (like line width, etc.)
+        #
+        if qs is None:
+            qs = self.qs
+        if out_path is None:
+            out_path = self.out_path
+        if tex_filename is None:
+            tex_filename = self.tex_filename
+        groups = self.groups
+        if max_rws is None:
+            max_rws = self.max_rws
+        fig_width = str(fig_width or self.fig_width)
+        #
+        SACCT_obj = self.SACCT_obj
+        #
+        figs_path = os.path.join(out_path, 'figs')
+        if not os.path.isdir(figs_path):
+            os.makedirs(figs_path)
+        #
+        HPC_tex_obj = Tex_Slides(Short_title=self.Short_title,
+                                         Full_title=self.Full_title,
+                                foutname=os.path.join(out_path, tex_filename))
+        #
+        #
+        if isinstance(groups, str):
+            with open(groups, 'r') as fin:
+                groups = json.load(fin)
+        #
+        # add an "all" group, with all names from groups. This is an expensive way to "All", since
+        #. it wil build and search an index, butwe will benefit from simplicity.
+        #
+        if self.add_all_groups:
+            #and not "all" in [s.lower() for s in groups.keys()]:
+            groups['All'] = list(set([s for rw in groups.values() for s in rw]))
+
+        print('keys: ', groups.keys() )
+        fig_size=tuple((12,9))
+        for k, (ky,usrs) in enumerate(groups.items()):
+            #
+            # DEBUG:
+            #if not ky in ('fs-scarp1', 'tgp'): continue
+            #
+            if ky in self.group_exclusions:
+                continue
+            if verbose:
+                print('*** DEBUG: group: {}'.format(ky))
+            #
+            # tex corrected group name:
+            grp_tex = ky.replace('_', '\_')
+            gpr_tex = ky.replace('\\_', '\_')
+            #
+            ix = numpy.where([s in usrs for s in SACCT_obj.jobs_summary['User'] ])
+            #
+            # any data here?
+            if len(SACCT_obj.jobs_summary[ix])==0:
+                print('*** WARNING! group: {} no records'.format(ky))
+                continue
+            #print('** DEBUG: sum(ix)={} / ix.shape={}'.format(numpy.sum(ix), numpy.shape(ix)) )
+            if len(ix)==0:
+                print('[{}]:: no records.'.format(ky))
+                continue
+            #
+            wkly_hrs = SACCT_obj.get_cpu_hours(bin_size=7, n_points=500, IX=ix, verbose=0)
+            act_jobs = SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
+            #
+            # DEBUG:
+            #print('*** weekly: ', wkly_hrs)
+            #print('*** act_jobs: ', act_jobs)
+            if len(act_jobs)==0:
+                print('Group: {}:: no records.'.format(ky))
+                continue
+            #
+            fg = plt.figure(figsize=fig_size)
+            ax1 = plt.subplot('211')
+            ax1.grid()
+            ax1a = ax1.twinx()
+            ax2 = plt.subplot('212', sharex=ax1)
+            ax2.grid()
+            #
+            ax1.plot(act_jobs['time'], act_jobs['N_jobs'], ls='-', lw=2., marker='', label='Jobs', alpha=.5 )
+            ax1a.plot(act_jobs['time'], act_jobs['N_cpu'], ls='--', lw=2., marker='', color='m',
+                      label='CPUs', alpha=.5)
+            ax1a.set_title('Group: {}'.format(ky))
+            #
+            ax2.plot(wkly_hrs['time'], wkly_hrs['cpu_hours']/7., ls='-', marker='.', label='bins=7 day', zorder=11)
+            #
+            ax1.set_ylabel('$N_{jobs}$', size=14)
+            ax1a.set_ylabel('$N_{cpu}$', size=14)
+            #
+            ax1.legend(loc='upper left')
+            ax1a.legend(loc='upper right')
+            #
+            ax2.set_ylabel('Daily CPU hours', size=16)
+            #
+            fg.canvas.draw()
+            #
+            # set ax3 labels to dates:
+            # now format the datestrings...
+            for ax in (ax1,):
+                # TODO: FIXME: so... this grossly malfunctions for fs-scarp1. it picks up the second positional argument as text, instead of the first. aka:
+#                ticklabels:  [Text(737445.5269299999, 0, '0.000030'), Text(737445.526935, 0, '0.000035'), Text(737445.5269399999, 0, '0.000040'), Text(737445.5269449999, 0, '0.000045'), Text(737445.52695, 0, '0.000050'), Text(737445.5269549999, 0, '0.000055'), Text(737445.5269599999, 0, '0.000060')]
+#                ticklabels:  ['0.000030', '0.000035', '0.000040', '0.000045', '0.000050', '0.000055', '0.000060']
+#                from this:
+#                print('\nticklabels: ', [s for s in ax.get_xticklabels()])
+#                print('ticklabels: ', [s.get_text() for s in ax.get_xticklabels()])
+                #
+                #if ky in ('fs-scarp1'):
+                #    continue
+                #
+                # just trap this so that it works. could throw a warning...
+                try:
+                    lbls = [simple_date_string(mpd.num2date( float(s.get_text())) ) for s in ax.get_xticklabels()]
+                except:
+                    print('** WARNING: failed writing date text labels:: {}'.format('lbls = "[simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]" '))
+                    print('"*** SysInfo: {}'.format(sys.exc_info()[0]))
+                    print('*** trying to write x-ticks with failsafe mmpd.num2date(max(1, float(s.get_text())) )')
+                    lbls = [simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]
+                #
+                ax.set_xticklabels(lbls)
+            #
+            #
+            # Save figure and add slide:
+            cpu_usage_fig_name = os.path.join('figs', '{}_cpu_usage.png'.format(ky))
+            cpu_usage_fig_path=os.path.join(out_path, cpu_usage_fig_name)
+            plt.savefig(cpu_usage_fig_path)
+            HPC_tex_obj.add_fig_slide(fig_title='{}: CPU/Jobs Requests'.format(grp_tex),
+                                                width=fig_width, fig_path=cpu_usage_fig_name)
+            print('*** [{}] Slide_1 added??:: {}'.format(ky, len(HPC_tex_obj.project_tex)))
+
+            #
+            # now, add the active jobs report:
+            #jobs_per_name=os.path.join('figs', '{}_jobs_per.png'.format(ky))
+            #jobs_per_path=os.path.join(output_path, jobs_per_name)
+            #
+            zz = SACCT_obj.active_cpu_jobs_per_day_hour_report(qs=qs,
+                                                figsize=fig_size, cpu_usage=act_jobs,foutname=None)
+            plt.suptitle('Instantaneous Usage: {}'.format(ky), size=16)
+            #
+            #
+            jobs_per_name=os.path.join('figs', '{}_jobs_per.png'.format(ky))
+            jobs_per_path=os.path.join(out_path, jobs_per_name)
+            #
+            plt.savefig(jobs_per_path)
+            HPC_tex_obj.add_fig_slide(fig_title='{}: Periodic Usage'.format(grp_tex),
+                                                width=fig_width, fig_path=jobs_per_name)
+            #
+            print('*** Slide_2 added??:: ', len(HPC_tex_obj.project_tex))
+            #print('** DEBUG: dpu_usage_fig_path:: {}'.format(cpu_usage_fig_path))
+            #print('** DEBUG: jobs_per_path:: {}'.format(jobs_per_path))
+            #
+            #
+            if (not max_rws is None) and k >= max_rws:
+                break
+            #HPC_tex_obj.render()
+            #
+        self.HPC_tex_obj=HPC_tex_obj
+        HPC_tex_obj.render()
+        #
+    #
+#
+#######
 #
 def get_group_users(user_id):
     # # and get a list of users to construct an index:
