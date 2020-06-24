@@ -240,6 +240,8 @@ class SACCT_data_handler(object):
         #
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        #
+        # TODO: parallelize this...
         self.cpu_usage = self.active_jobs_cpu()
     #
     #@numba.jit
