@@ -814,7 +814,7 @@ class SACCT_data_handler(object):
         #ax2.plot(jobs_hourly['x'], jobs_hourly['mean'], ls='-', marker='o', label='PST')
         ax2.plot((jobs_hourly['x']), jobs_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
         ax3.plot(jobs_weekly['x'], jobs_weekly['q_0.5'], ls='-', marker='o', color='b')
-        ax3.plot(jobs_weekly['x'], jobs_weekly['mean'], ls='--', marker='', color='b')
+        ax3.plot(jobs_weekly['x'], jobs_weekly['mean'], ls='--', marker='', color='b', label='mean')
         ax3.fill_between(jobs_weekly['x'], jobs_weekly[qs_s[0]], jobs_weekly[qs_s[-1]],
                          alpha=.1, zorder=1, color='b')
         #
@@ -823,7 +823,7 @@ class SACCT_data_handler(object):
         #ax5.plot(cpu_hourly['x'], cpu_hourly['mean'], ls='-', marker='o', label='PST')
         ax5.plot( (cpu_hourly['x']), cpu_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
         ax6.plot(cpu_weekly['x'], cpu_weekly['q_0.5'], ls='-', marker='o', color='b')
-        ax6.plot(cpu_weekly['x'], cpu_weekly['mean'], ls='--', marker='', color='b')
+        ax6.plot(cpu_weekly['x'], cpu_weekly['mean'], ls='--', marker='', color='b', label='mean')
         #
         # TODO: can we simplyfy this qs syntax?
         ax6.fill_between(cpu_weekly['x'], cpu_weekly[qs_s[0]], cpu_weekly[qs_s[-1]], alpha=.1, zorder=1, color='b')
@@ -1006,6 +1006,9 @@ class SACCT_groups_analyzer_report(object):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
         #print('*** DEBUG: __init__: {}'.format(self.out_path))
+        #
+        if self.groups is None:
+            self.groups={'All':list(set(SACCT_obj.jobs_summary['User']))}
         #
         self.make_report()
         
