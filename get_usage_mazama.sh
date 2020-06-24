@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH -n 1
-#SBATCH -o data/sacct_mazama_out.out
-#SBATCH -e data/sacct_mazama_out.err
+#SBATCH -o data/sacct_mazama_out_%j.out
+#SBATCH -e data/sacct_mazama_out_%j.err
 
 # can we pass "\t" correctly? maybe for now, just use the HPC standard "|" as a delimiter...
-STARTTIME1="2019-10-15"
+STARTTIME1="2019-12-01"
 STARTTIME2="2019-12-15"
 STARTTIME3="2020-04-01"
 
