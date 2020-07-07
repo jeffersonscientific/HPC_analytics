@@ -753,7 +753,12 @@ class SACCT_data_handler(object):
         X = X[ix].astype(int)    # NOTE: at some point, we might actually want the non-int X values...
         Y = Y[ix]
         X0 = numpy.unique(X).astype(int)
-        #        
+        #
+        # NOTE: qualtile is a relatively new numpuy feature (1.16.x I think). It's not uncommon
+        #  to run into 1.14 or 1.15, so this breaks. For now, let's use .percen() instead,
+        #  which is equivalnet except that q[0,100] instead of q[0,1]
+        # TODO: implement percent()
+        #quantiles = numpy.array([numpy.percent(Y[X==j], 100*numpy.array(qs)) for j in X0])
         quantiles = numpy.array([numpy.quantile(Y[X==j], qs) for j in X0])
         #
         #quantiles = numpy.array([numpy.quantile(y[X.astype(int)==int(j)], qs) for j in range(24)])
