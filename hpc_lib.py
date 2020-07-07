@@ -372,7 +372,10 @@ class SACCT_data_handler(object):
         #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
         '''
         #
-        t_now = mpd.date2num( dtm.datetime.now() )
+        # NOTE: this can create anomalous usage stats for analyses where t_Now >> max(t). To be accurate, we really need 
+        # to know when the query was done. For large sets, max([start_time, end_time] should suffice)
+        #t_now = mpd.date2num( dtm.datetime.now() )
+        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
         #
         # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something) 
         #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
@@ -573,7 +576,9 @@ class SACCT_data_handler(object):
 #             #
 #             Ns[j] = numpy.sum(ix_t.astype(int))
 #             Ns_cpu[j] = numpy.sum(jobs_summary['NCPUS'][ix_t])
-        # 
+        #
+        # TODO: return this as a structured array, not recarray, and/or N_jobs and N_cpus as integer? It will
+        #  be more compact.
         return numpy.core.records.fromarrays([X, Ns, Ns_cpu], dtype=[('time', '>f8'), 
                                                                      ('N_jobs', '>f8'),
                                                                      ('N_cpu', '>f8')])
