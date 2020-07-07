@@ -1,4 +1,9 @@
 #!python
+#SBATCH --output=calc_sacct_obj.out
+#SBATCH --error=calc_sacct_obj.err
+#SBATCH --mem=8gb
+#SBATCH --ntasks=4
+#SBATCH -N 1
 
 import matplotlib
 matplotlib.use("Agg")
@@ -18,13 +23,18 @@ import subprocess
 import hpc_lib
 
 #
-data_file_name = 'data/sacct_mazama_0623_tool8.out'
+data_file_name = 'data/sacct_owners_out_3500489.out'
+#data_file_name = 'data/sacct_mazama_0623_tool8.out'
 #data_file_name = '/scratch/myoder96/HPC_analytics/data/sacct_serc_20200622.out'
 #
-pickle_in=True
+pickle_in=False
 pickle_out=True      # NOTE: will only be effective if pickle_in==False
 #
+data_path, data_fname = os.path.split(data_file_name)
+data_fname_root, data_fname_ext = os.path.splitext(data_file_name)
+#
 pkl_name = "{}.pkl".format(os.path.splitext(data_file_name)[0])
+tex_fname = '{}.tex'.format(data_fname_root)
 #
 #
 # temporarily, comment these out so we can just run the report:
@@ -52,8 +62,10 @@ else:
 	#
 #
 
-system_name='mazama_0623'
-groups_fname='mazama_groups.json'
+#system_name='mazama_0623'
+system_name=data_fname_root
+#groups_fname='mazama_groups.json'
+groups_fname={'ALL':list(set(sacct_mazama.jobs_summary['User']))}
 output_path = 'output/{}_HPC_analytics'.format(system_name)
 print('*** cleaning up old out_path...')
 sp_status = subprocess.run(['rm', '-rf', output_path])
@@ -61,6 +73,6 @@ print('*** out_path (should be) removed: ', sp_status)
 #
 print('*** Compute report:')
 mazama_report = hpc_lib.SACCT_groups_analyzer_report(out_path=output_path, groups=groups_fname,
-                                            tex_filename='Mazama_HPC_analytics_0623.tex',
+                                            tex_filename=tex_fname,
                                             SACCT_obj=sacct_mazama, max_rws=None)
 

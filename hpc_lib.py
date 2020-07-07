@@ -758,8 +758,8 @@ class SACCT_data_handler(object):
         #  to run into 1.14 or 1.15, so this breaks. For now, let's use .percen() instead,
         #  which is equivalnet except that q[0,100] instead of q[0,1]
         # TODO: implement percent()
-        #quantiles = numpy.array([numpy.percent(Y[X==j], 100*numpy.array(qs)) for j in X0])
-        quantiles = numpy.array([numpy.quantile(Y[X==j], qs) for j in X0])
+        quantiles = numpy.array([numpy.percent(Y[X==j], 100*numpy.array(qs)) for j in X0])
+        #quantiles = numpy.array([numpy.quantile(Y[X==j], qs) for j in X0])
         #
         #quantiles = numpy.array([numpy.quantile(y[X.astype(int)==int(j)], qs) for j in range(24)])
         #
@@ -1308,8 +1308,10 @@ def time_bin_aggregates(XY, bin_mod=24, qs=[.25, .5, .75]):
     for k,x in enumerate(numpy.unique(X_mod) ):
         ix = X_mod==x
         this_Y = Y[ix]
+        #stats_output += [numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
+        #                              numpy.quantile(this_Y, qs))]
         stats_output += [numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
-                                      numpy.quantile(this_Y, qs))]
+        numpy.percent(this_Y, 100.*qs))]
         #
         # ... I confess that assignment to these structured arrays is baffling me...
         #X_out[k,:] = numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
