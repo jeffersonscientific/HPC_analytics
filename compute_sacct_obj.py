@@ -1,4 +1,4 @@
-#!python
+#!/bin/python3
 #SBATCH --output=calc_sacct_obj.out
 #SBATCH --error=calc_sacct_obj.err
 #SBATCH --mem=8gb
@@ -36,6 +36,7 @@ data_fname_root, data_fname_ext = os.path.splitext(data_file_name)
 pkl_name = "{}.pkl".format(os.path.splitext(data_file_name)[0])
 tex_fname = '{}.tex'.format(data_fname_root)
 #
+n_cpu=8
 #
 # temporarily, comment these out so we can just run the report:
 #sacct_mazama = hpc_lib.SACCT_data_handler(data_file_name=data_file_name)
@@ -53,7 +54,7 @@ if pickle_in:
 	with open(pkl_name, 'rb') as fin:
 		sacct_mazama = pickle.load(fin)
 else:
-	sacct_mazama = hpc_lib.SACCT_data_handler(data_file_name=data_file_name)
+	sacct_mazama = hpc_lib.SACCT_data_handler(data_file_name=data_file_name, n_cpu=n_cpu)
 	#
 	if pickle_out:
 		with open(pkl_name, 'wb') as fout:
