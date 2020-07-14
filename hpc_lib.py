@@ -136,7 +136,7 @@ class SACCT_data_handler(object):
     time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
     #
     #
-    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None, verbose=1):
+    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None, verbose=0):
         #
         if types_dict is None:
             #
@@ -311,7 +311,7 @@ class SACCT_data_handler(object):
                 del results
                 del P
             else:
-                data = [self.process_row(rw) for rw in fin]
+                data = [self.process_row(rw) for k,rw in enumerate(fin) if (max_rows is None or k<=max_rows) ]
             #
             #all_the_data = fin.readlines(max_rows)
             #
@@ -673,25 +673,20 @@ class SACCT_data_handler(object):
             #return numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
             return null_return()
         #
+        if ix is None:
+            jobs_summary=self.jobs_summary
+        else:
+            jobs_summary = self.jobs_summary[ix]
         #
-        t_now = mpd.date2num( dtm.datetime.now() )
-        #
-        jobs_summary = self.jobs_summary[ix]
+        #t_now = mpd.date2num( dtm.datetime.now() )
+        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
         #
         if len(jobs_summary)==0:
             return null_return()
         #
-        # been wrestling with datetime types, as usual, so eventually decided maybe to just
-        #. use floats?
-        #t_start = self.jobs_summary['Start']
         t_start = jobs_summary['Start']
-        #
-        #t_end = self.jobs_summary['End']
         t_end = jobs_summary['End']
-        
-        #t_end[t_end is None] = numpy.datetime64(t_now)
         t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
-        #
         #
         #print('** DEBUG: ', t_end.shape, t_start.shape)
         #
@@ -711,12 +706,21 @@ class SACCT_data_handler(object):
         t_max = numpy.nanmax([t_start, t_end])
         #
         if bin_size is None:
-            X = numpy.linspace(t_min, t_max, n_points)
+            #X = numpy.linspace(t_min, t_max, n_points)
+            output = numpy.zeros( n_points, dtype=[('time', '>f8'),
+                                                    ('N_jobs', '>f8'),
+                                                    ('N_cpu', '>f8')])
+            output['time'] = numpy.linspace(t_min, t_max, n_points)
         else:
             X = numpy.arange(t_min, t_max, bin_size)
+            output = numpy.zeros( len(X), dtype=[('time', '>f8'),
+                                                ('N_jobs', '>f8'),
+                                                ('N_cpu', '>f8')])
+            output['time'] = X
+            del X
         #
-        Ns = numpy.zeros(len(X))
-        Ns_cpu = numpy.zeros(len(X))
+        #Ns = numpy.zeros(len(X))
+        #Ns_cpu = numpy.zeros(len(X))
         #
         # This is a slick way to make an index, but It uses too much memory (unless
         #.  we want to have custom runs for high-mem HPC nodes... or have a go on one of the tool servers.
@@ -724,42 +728,33 @@ class SACCT_data_handler(object):
         #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
         # the boolean index gets really big, so it makes sense to also (or alternatively) use an positional index:
         #
-        # really a pain to get this to handle an empty set...
+        # This also uses too much memory. we can use numpy.where() to convert an N length boolean index to an
+        #  n length positional index, but it sill uses too much memory for large data sets:
         # use numpy.where() to convert a boolean index to a positional index
-        #IX_k = numpy.array([numpy.where(ix) for ix in IX_t])
-        # so... was getting the index in [1], but now getting an index error and test show the indes in [0]...
-        IX_k = [numpy.where(numpy.logical_and(x>=t_start, x<=t_end) )[0] for x in X]
-        #IX_k = numpy.array([numpy.arange(len(t_start))[numpy.logical_and([x]>=t_start, [x]<t_end)] for x in X])
-        #IX_k = numpy.array([[k for k, (t1,t2) in enumerate(zip(t_start, t_end)) if x>=t1 and x<t2] for x in X])
         #
-        # NOTE: be sure we know if we're using boolean or positional indices. Note we could make this more robust (tolerant, and correct) for both by doing
-        #  something like, len(jobs_summary[{any_col}][rw] , but skipping the broadcast should give us a significant performance boost.
-        #Ns = numpy.sum(IX_t, axis=1)
-        Ns = numpy.array([len(rw) for rw in IX_k])
+        #IX_k = [numpy.where(numpy.logical_and(x>=t_start, x<=t_end) )[0] for x in X]
+        #Ns = numpy.array([len(rw) for rw in IX_k])
         #
         # See above; there is a way to do this in full-numpy mode, but it will use most of the memory in the world,
         #.  so probably not reliable even on the HPC... and in fact likely not faster, since the matrices/vectors are
         #. ver sparse.
         #Ns_cpu = numpy.sum(jobs_summary['NCPUS'][IX_t], axis=1)
         #
-        Ns_cpu = numpy.array([numpy.sum(jobs_summary['NCPUS'][kx]) for kx in IX_k])
+        #Ns_cpu = numpy.array([numpy.sum(jobs_summary['NCPUS'][kx]) for kx in IX_k])
         # there should be a way to broadcast the array to indices, but I'm not finding it just yet...
         #Ns_cpu = numpy.sum(numpy.broadcast_to(jobs_summary['NCPUS'][0], (len(IX_k),len(jobs_summary) )
         #
-        # Here's the blocked out loop-loop version. Vectorized is much faster.
-#         for j, t in enumerate(X):
-#             ix_t = numpy.logical_and(t_start<=t, t_end>t)
-#             #
-#             # TODO: weight jobs, ncpu by fraction of time active during bin interval.
-#             #
-#             Ns[j] = numpy.sum(ix_t.astype(int))
-#             Ns_cpu[j] = numpy.sum(jobs_summary['NCPUS'][ix_t])
+        # Here's the blocked out loop-loop version. Vectorized was originally much faster, but maybe if we pre-set the array
         #
-        # TODO: return this as a structured array, not recarray, and/or N_jobs and N_cpus as integer? It will
-        #  be more compact.
-        return numpy.core.records.fromarrays([X, Ns, Ns_cpu], dtype=[('time', '>f8'), 
-                                                                     ('N_jobs', '>f8'),
-                                                                     ('N_cpu', '>f8')])
+        for j, t in enumerate(output['time']):
+            ix_t = numpy.where(numpy.logical_and(t_start<=t, t_end>t))[0]
+            #
+            output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
+            if verbose and j%1000==0:
+                print('*** PROGRESS: {}/{}'.format(j,len(output)))
+                print('*** ', output[j-10:j])
+        #
+        return output
     #
     def get_wait_stats(self):
         # TODO: revise this to use a structured array, not a recarray.
