@@ -182,6 +182,7 @@ class SACCT_data_handler(object):
             #self.data = self.data_df.values.to_list()
         #
         self.headers = self.data.dtype.names
+        # row-headers index:
         self.RH = {h:k for k,h in enumerate(self.headers)}
         #
         # local shorthand:
@@ -221,7 +222,6 @@ class SACCT_data_handler(object):
         t_now = mpd.date2num(dtm.datetime.now())
         for k, (j_id, ks) in enumerate(job_ID_index.items()):
             jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
-            
             #
             # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
             #  use their index position, rather than min()/max()... but we'd need to be more careful about
@@ -230,7 +230,7 @@ class SACCT_data_handler(object):
             #. {stuff} = max(data['End'][ks])
             #
             sub_data = data[sorted(ks)]
-            
+            #
             #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
             jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
             jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
@@ -253,6 +253,7 @@ class SACCT_data_handler(object):
         #
         # TODO: parallelize this...
         self.cpu_usage = self.active_jobs_cpu()
+    #
     #
     #@numba.jit
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
@@ -365,19 +366,111 @@ class SACCT_data_handler(object):
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
                     for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
     #
+#    @numba.jit
+#    def get_cpu_hours_2(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
+#        '''
+#        # NOTE: it might still be better to transpose the looping, but doint it this was makes computing weekly, daily, etc.
+#        #  bin sizes a little more complicated, so let's just skip it for now (but keep this code in place, 'lest we want to
+#        #  repurpose it later.
+#        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
+#        #. but it should be manageable).
+#        # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
+#        #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
+#        '''
+#        #
+#        # invert get_cpu_ours(), so primary-loop through jobs_summary and map cpu_count and _hours for t_start -> t_end
+#        #  over X. block out the loop as much as necessary for memory efficienty. Also, one of the major memory savings will
+#        #  be to not pre-comnpute the IX_k index
+#        #
+#        # Front matter: validate inputs, set up max/min domains, etc.
+#        if jobs_summary is None:
+#            jobs_summary = self.jobs_summary
+#        #
+#        if verbose:
+#            print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
+#        # NOTE: passing a None index appears to have a null effect -- just returns the whole array, but it does not.
+#        #  when we pass None as an index, the columns are returned with elevated rank. aka,
+#        #  (X[None])[col].shape == (1, n)
+#        #  (X[col].shape == (n,)
+#        #  (X[ix])[col].shape == (n,)
+#        if not IX is None:
+#            jobs_summary = jobs_summary[IX]
+#        #
+#        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+#        if verbose:
+#            print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
+#        #
+#        if len(jobs_summary)==0:
+#            return numpy.array([], dtype=[('time', '>f8'),
+#            ('t_start', '>f8'),
+#            ('cpu_hours', '>f8'),
+#            ('N_jobs', '>f8')])
+#        #
+#        # NOTE: See above discussion RE: [None] index and array column rank.
+#        t_start = jobs_summary['Start']
+#        #t_start = jobs_summary['Start'][0]
+#        #
+#        t_end = jobs_summary['End']
+#        #t_end = jobs_summary['End'][0]
+#        if verbose:
+#            print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
+#        #
+#        # for unfinished jobs, assing the "now" time:
+#        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+#        #
+#        if verbose:
+#            print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
+#        #
+#        #
+#        if t_min is None:
+#            t_min = numpy.nanmin([t_start, t_end])
+#        t_max = numpy.nanmax([t_start, t_end])
+#        #
+#        # can also create X sequence like this, for minute resolution
+#        # X = numpy.arange(t_min, t_max, 1./(24*60))
+#        #
+#        CPU_H = numpy.zeros
+#        X = numpy.linspace(t_min, t_max, n_points)
+#        dX = (t_max - t_min)/n_points
+#        #
+#        cpu_h = numpy.zeros(n_points)
+#        # TODO: figure out the n_jobs we want to measure. job-hours maybe?
+#        #n_jobs = numpy.zeros(n_points)
+#        #
+#        # in steps
+#        #IX_t = numpy.array([numpy.logical_and(t_start<=t, t_end>t) for t in X])
+#        if verbose:
+#            print('*** debug: starting IX_k')
+#        #
+#        # So... if necessary, assume sufficient X resolution and use integer value approximations for counting active time.
+#        # integer math will be faster, and we can save some steps as well. For now, I think we can add fractional ends (to the
+#        # job times)
+#        for job in self.jobs_summary:
+#            #
+#            # TODO: wrap into function so we can run in parallel. use MPI4py?
+#            k_start = X.searchsorted(job['Start'])
+#            k_end   = X.searchsorted(job['End'])
+#            #
+#            # cpu_h[k_start:k_end+1] = numpy.array([X[k_start] - 2.2, *numpy.ones(k_end-k_start-1)*1.0, 7.7-X[k_end-1] ])
+#            cpu_h[k_start:k_end+1] += job['NCPUS']*numpy.array([X[k_start] - job['Start'], *numpy.ones(k_end-k_start-1)*dX, job['End']-X[k_end-1] ])
+#        #
+#        # now, normalize to cpu-hours/day:
+#        cpu_h *= 24./dx
+#        #
+#        return numpy.array([tuple(rw) for rw in numpy.array([X, cpu_h ], dtype=[('time', '>f8'), ('cpu_hours', '>f8')] )])
+##
     #@numba.jit
-    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
+    def get_cpu_hours_depricated(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
         '''
+        # DEPRICATION: this works, but is super memory intensive for large data sets, as per the use of vectorization and
+        #  arrays, but possibly not actually benefiting from the massive memory consumption. Replacing with a simpler,
+        #  loop-loop-like version.
+        #
         # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
         #. but it should be manageable).
         # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
         #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
         '''
-        #
-        # NOTE: this can create anomalous usage stats for analyses where t_Now >> max(t). To be accurate, we really need 
-        # to know when the query was done. For large sets, max([start_time, end_time] should suffice)
-        #t_now = mpd.date2num( dtm.datetime.now() )
-        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
         #
         # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something) 
         #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
@@ -387,7 +480,7 @@ class SACCT_data_handler(object):
             #. could try to trap this, or for now just force the calling side to handle it? I think we just have to make
             # a copy of the data...
             jobs_summary = self.jobs_summary
-            #jobs_summary = self.jobs_summary
+        #
         if verbose:
             print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
         # NOTE: passing a None index appears to have a null effect -- just returns the whole array, but id does not.
@@ -398,6 +491,7 @@ class SACCT_data_handler(object):
         if not IX is None:
             jobs_summary = jobs_summary[IX]
         #
+        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
         if verbose:
             print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
         #
@@ -436,48 +530,130 @@ class SACCT_data_handler(object):
         if verbose:
             print('*** debug: starting IX_k')
         #
+        # ... blocking these out in-line would save a lot of memory too...
         #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
         IX_k = [numpy.where(numpy.logical_and(x>=t_start, (x-bin_size)<t_end))[0] for x in X]
-        N_ix = numpy.array([len(rw) for rw in IX_k])
+        #
+        # we dont' actually do anything with this...
+        #N_ix = numpy.array([len(rw) for rw in IX_k])
         #
         if verbose:
             print('*** DEBUG: IX_K:: ', IX_k[0:5])
             print('*** DEBUG: IX_k[0]: ', IX_k[0], type(IX_k[0]))
         #
+        # This is the intermediate memory way to do this. We get away with it for raw data sets ~800 MB or so, but
+        #  when we get up to the 3GB sets we find for Sherlock.owners, it gets out of control and we see memory usage
+        #  peaking over 100GB... which is not ok. Turns out that simple loops can actually be faster with numba@jit compilation
+        #  so let's see if we can do that...
+        # ... but what happens if we just block this out one more level? are we taking a major memory hit from just the list comprehension?
         cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(jx))*x, t_end[jx]], axis=0) - 
                            numpy.max([numpy.ones(len(jx))*(x-bin_size), t_start[jx]], axis=0))*(jobs_summary['NCPUS'])[jx] )
                            for x,jx in zip(X, IX_k) ])
-#         # convert to hours:
+        #
+        # convert to hours:
         cpu_h*=24.
         #
         if verbose:
             print('*** ', cpu_h.shape)
         #
-#         for k,t in enumerate(X):
-#             ix_t = numpy.logical_and(t_start<=t, t_end>(t-bin_size) )
-#             #print('*** shape(ix_t): {}//{}'.format(ix_t.shape, numpy.sum(ix_t)) )
-#             #
-#             N_ix = numpy.sum(ix_t)
-#             if N_ix==0:
-#                 cpu_hours[k] = t, t-bin_size,0.,0.
-#                 continue
-#             #
-#             #print('** ** ', ix_t)
-#             cpu_hours[k] = t, t-bin_size, numpy.sum( numpy.min([t*numpy.ones(N_ix), t_end[ix_t]], axis=0) - 
-#                                numpy.max([(t-bin_size)*numpy.ones(N_ix), t_start[ix_t]]))*24., N_ix
-#         #
-        #return cpu_h
-        #print('*** DB: ', N_ix[0:10])
-        #print('*** shapes: ', [numpy.shape(s) for s in [X,X-bin_size, cpu_h, N_ix]])
-#         return numpy.core.records.fromarrays([X, X-bin_size, cpu_h, [len(rw) for rw in IX_k]], dtype=[('time', '>f8'), 
-#                                                                        ('t_start', '>f8'),
-#                                                                        ('cpu_hours', '>f8'),
-#                                                                        ('N_jobs', '>f8')])
-#         #
+        #
         return numpy.array([tuple(rw) for rw in numpy.array([X, X-bin_size, cpu_h, [len(rw) for rw in IX_k]]).T ], dtype=[('time', '>f8'), 
                                                                        ('t_start', '>f8'),
                                                                        ('cpu_hours', '>f8'),
                                                                        ('N_jobs', '>f8')])
+    #
+    #
+    #@numba.jit
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
+        '''
+        # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
+        #  intermediat/transient arrays.
+        #
+        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
+        #. but it should be manageable).
+        # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
+        #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
+        '''
+        #
+        # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something)
+        #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
+        #. ARY[col][k] --> (ARY[col][0])[k]
+        if jobs_summary is None:
+            # NOTE: (see notes below), pasing a None index appears to have a null effect, but it actually reshapes
+            #  the array, like [n,] to something like [n,1], so a vector to a [ [], [], [],...]
+            jobs_summary = self.jobs_summary
+        #
+        if verbose:
+            print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
+        # NOTE: passing a None index appears to have a null effect -- just returns the whole array, but id does not.
+        #  when we pass None as an index, the columns are returned with elevated rank. aka,
+        #  (X[None])[col].shape == (1, n)
+        #  (X[col].shape == (n,)
+        #  (X[ix])[col].shape == (n,)
+        if not IX is None:
+            jobs_summary = jobs_summary[IX]
+        #
+        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+        if verbose:
+            print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
+        #
+        if len(jobs_summary)==0:
+            return numpy.array([], dtype=[('time', '>f8'),
+            ('t_start', '>f8'),
+            ('cpu_hours', '>f8'),
+            ('N_jobs', '>f8')])
+        #
+        # NOTE: See above discussion RE: [None] index and array column rank.
+        t_start = jobs_summary['Start']
+        #t_start = jobs_summary['Start'][0]
+        #
+        t_end = jobs_summary['End'].copy()
+        #t_end = jobs_summary['End'][0]
+        if verbose:
+            print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
+        #
+        # handle currently running jobs (do we need to copy() the data?)
+        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+        #
+        if verbose:
+            print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
+        #
+        #
+        if t_min is None:
+            t_min = numpy.nanmin([t_start, t_end])
+        t_max = numpy.nanmax([t_start, t_end])
+        #
+        #
+        CPU_H = numpy.zeros( (n_points, ), dtype=[('time', '>f8'),
+                                                    ('t_start', '>f8'),
+                                                    ('cpu_hours', '>f8'),
+                                                    ('N_jobs', '>f8')])
+        CPU_H['time'] = numpy.linspace(t_min, t_max, n_points)
+        CPU_H['t_start'] = CPU_H['time']-bin_size
+        #
+        if verbose:
+            print('*** ', cpu_h.shape)
+        #
+        for k,t in enumerate(CPU_H['time']):
+            # TODO: wrap this into a (@jit compiled) function to parallelize? or add a recursive block
+            #  to parralize the whole function, using an index to break it up.
+            ix_k = numpy.where(numpy.logical_and(t_start<=t, t_end>(t-bin_size) ))[0]
+            #print('*** shape(ix_k): {}//{}'.format(ix_k.shape, numpy.sum(ix_k)) )
+            #
+            N_ix = len(ix_k)
+            if N_ix==0:
+                CPU_H[k] = t, t-bin_size,0.,0.
+                continue
+            #
+            #print('** ** ', ix_k)
+            #CPU_H[k] = t, t-bin_size, numpy.sum( numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
+            #                    numpy.max([(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]]) )*24., N_ix
+            #print('*** *** ', k,t, N_ix, ix_k)
+            CPU_H[['cpu_hours', 'N_jobs']][k] = numpy.sum( (numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
+                numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] ), N_ix
+        #
+        #CPU_H['cpu_hours']*=24.
+        return CPU_H
     #
     #@numba.jit
     def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, verbose=0):
@@ -762,8 +938,8 @@ class SACCT_data_handler(object):
         # NOTE: qualtile is a relatively new numpuy feature (1.16.x I think). It's not uncommon
         #  to run into 1.14 or 1.15, so this breaks. For now, let's use .percen() instead,
         #  which is equivalnet except that q[0,100] instead of q[0,1]
-        # TODO: implement percent()
-        quantiles = numpy.array([numpy.percent(Y[X==j], 100*numpy.array(qs)) for j in X0])
+        # TODO: implement percentile()
+        quantiles = numpy.array([numpy.percentile(Y[X==j], 100*numpy.array(qs)) for j in X0])
         #quantiles = numpy.array([numpy.quantile(Y[X==j], qs) for j in X0])
         #
         #quantiles = numpy.array([numpy.quantile(y[X.astype(int)==int(j)], qs) for j in range(24)])
@@ -1286,7 +1462,7 @@ def active_groups_to_json(fout_name='mazama_groups.json'):
     #
     return None
 #
-def time_bin_aggregates(XY, bin_mod=24, qs=[.25, .5, .75]):
+def time_bin_aggregates(XY, bin_mod=24, qs=numpy.array([.25, .5, .75])):
     # NOTE: this is not quite general purpose. it takes the input%1, then converts the fractional remainder
     #. (modulus) to an integer(ish) by multiplying. Aka, t%1 gives the remaining fraction of a day (by standard
     #. python date conventions); (t%1)*24 gives that in hours. But to convert this to DoW, we first have 
@@ -1316,7 +1492,7 @@ def time_bin_aggregates(XY, bin_mod=24, qs=[.25, .5, .75]):
         #stats_output += [numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
         #                              numpy.quantile(this_Y, qs))]
         stats_output += [numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
-        numpy.percent(this_Y, 100.*qs))]
+        numpy.percentile(this_Y, 100.*numpy.array(qs)))]
         #
         # ... I confess that assignment to these structured arrays is baffling me...
         #X_out[k,:] = numpy.append([x, numpy.mean(this_Y), numpy.std(this_Y)],
