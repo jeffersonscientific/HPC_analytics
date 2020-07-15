@@ -4,6 +4,7 @@ import os
 import sys
 import numpy
 import scipy
+import scipy.constants
 #import matplotlib
 import matplotlib.dates as mpd
 #import pylab as plt
@@ -957,23 +958,34 @@ class SACCT_data_handler(object):
     #
     # figures and reports:
     def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10),
-     cpu_usage=None, verbose=0, foutname=None):
+     cpu_usage=None, verbose=0, foutname=None, periodic_projection='rectilinear'):
         '''
         # 2x3 figure of instantaneous usage (active cpus, jobs per day, week)
         '''
         if cpu_usage is None:
             cpu_usage = self.cpu_usage
         #
+        # Polar, etc. projections:
+        # allowed projections (probably) include:
+        #  {None, 'aitoff', 'hammer', 'lambert', 'mollweide', 'polar', 'rectilinear', str}
+        #  default, None -> 'rectilinear'
+        if periodic_projection == 'polar':
+            daily_Period = 2.0*scipy.constants.pi/24.
+            weekly_Period = 2.0*scipy.constants.pi/7.
+        else:
+            daily_Period = 1.0
+            weekly_Period = 1.0
+        #
+        #
         fg = plt.figure(figsize=figsize)
         #
         ax1 = fg.add_subplot('231')
-        ax2 = fg.add_subplot('232')
-        ax3 = fg.add_subplot('233')
+        ax2 = fg.add_subplot('232', projection=periodic_projection)
+        ax3 = fg.add_subplot('233', projection=periodic_projection)
         ax4 = fg.add_subplot('234')
-        ax5 = fg.add_subplot('235')
-        ax6 = fg.add_subplot('236')
+        ax5 = fg.add_subplot('235', projection=periodic_projection)
+        ax6 = fg.add_subplot('236', projection=periodic_projection)
         axs = [ax1, ax2, ax3, ax4, ax5, ax6]
-        [ax.grid() for ax in axs]
         #
         #qs = [.45, .5, .55]
         qs_s = ['q_{}'.format(q) for q in qs]
@@ -991,23 +1003,39 @@ class SACCT_data_handler(object):
         #
         ix_pst = numpy.argsort( (jobs_hourly['x']-7)%24)
         #
+        X_tmp_hr = numpy.linspace(jobs_hourly['x'][0], jobs_hourly['x'][-1]+1,200)*daily_Period
+        X_tmp_wk = numpy.linspace(jobs_weekly['x'][0], jobs_weekly['x'][-1]+1,200)*weekly_Period
+        #
         hh1 = ax1.hist(sorted(cpu_usage['N_jobs'])[0:int(1.0*len(cpu_usage))], bins=25, cumulative=False)
         #ax2.plot(jobs_hourly['x'], jobs_hourly['mean'], ls='-', marker='o', label='PST')
-        ax2.plot((jobs_hourly['x']), jobs_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
-        ax3.plot(jobs_weekly['x'], jobs_weekly['q_0.5'], ls='-', marker='o', color='b')
-        ax3.plot(jobs_weekly['x'], jobs_weekly['mean'], ls='--', marker='', color='b', label='mean')
+        ln, = ax2.plot(jobs_hourly['x']*daily_Period, jobs_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
+        clr = ln.get_color()
+        #
+        #ax2.plot(jobs_hourly['x']*daily_Period, numpy.ones(len(jobs_hourly['x']))*numpy.mean(jobs_hourly['mean'][ix_pst]), ls='--', marker='', zorder=1, alpha=.7, label='mean', color=clr)
+        ax2.plot(X_tmp_hr, numpy.ones(len(X_tmp_hr))*numpy.mean(jobs_hourly['mean'][ix_pst]), ls='--', marker='', zorder=1, alpha=.7, label='mean', color=clr)
+        #
+        ax3.plot(jobs_weekly['x']*weekly_Period, jobs_weekly['q_0.5'], ls='-', marker=
+        'o', color=clr)
+        #ax3.plot(jobs_weekly['x']*weekly_Period, jobs_weekly['mean'], ls='--', marker='', color=clr, label='mean')
         ax3.fill_between(jobs_weekly['x'], jobs_weekly[qs_s[0]], jobs_weekly[qs_s[-1]],
-                         alpha=.1, zorder=1, color='b')
+                         alpha=.1, zorder=1, color=clr)
+        ax3.plot(X_tmp_wk, numpy.ones(len(X_tmp_wk))*numpy.mean(jobs_weekly['q_0.5']), ls='-.', alpha=.7, zorder=1, label='$<q_{0.5}$')
         #
         #
         hh4 = ax4.hist(cpu_usage['N_cpu'], bins=25)
         #ax5.plot(cpu_hourly['x'], cpu_hourly['mean'], ls='-', marker='o', label='PST')
-        ax5.plot( (cpu_hourly['x']), cpu_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
-        ax6.plot(cpu_weekly['x'], cpu_weekly['q_0.5'], ls='-', marker='o', color='b')
-        ax6.plot(cpu_weekly['x'], cpu_weekly['mean'], ls='--', marker='', color='b', label='mean')
+        ln, = ax5.plot( cpu_hourly['x']*daily_Period, cpu_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
+        clr=ln.get_color()
+        ax5.plot(X_tmp_hr, numpy.ones(len(X_tmp_hr))*numpy.mean(cpu_hourly['mean'][ix_pst]), ls='--', marker='',
+                color=clr, label='mean')
+        #
+        ax6.plot(cpu_weekly['x']*weekly_Period, cpu_weekly['q_0.5'], ls='-', marker='o', color=clr)
+        ax6.plot(cpu_weekly['x']*weekly_Period, cpu_weekly['mean'], ls='--', marker='', color=clr, label='mean')
         #
         # TODO: can we simplyfy this qs syntax?
         ax6.fill_between(cpu_weekly['x'], cpu_weekly[qs_s[0]], cpu_weekly[qs_s[-1]], alpha=.1, zorder=1, color='b')
+        ax6.plot(X_tmp_wk, numpy.ones(len(X_tmp_wk))*numpy.mean(cpu_weekly['q_0.5']), ls='-.', alpha=.7, zorder=1, label='$<q_{0.5}$')
+        #
         #
         #ax1.set_ylim(-5., 200)
         ax1.set_title('$N_{jobs}$ Histogrm', size=16)
@@ -1024,8 +1052,23 @@ class SACCT_data_handler(object):
         ax2.legend(loc=0)
         ax5.legend(loc=0)
         #
+        weekdays={ky:vl for ky,vl in zip(range(7), ['sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])}
         for ax in (ax3, ax6):
-            ax.set_xticklabels(['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+            #
+            #print('*** wkly', weekly_Period*numpy.array(ax.get_xticks()))
+            #ax.set_xticklabels(['', *[weekdays[int(x/weekly_Period)] for x in ax.get_xticks()[1:]] ] )
+            #ax.set_xticks(numpy.arange(0,8)*weekly_Period)
+            
+            ax.set_xticks(cpu_weekly['x']*weekly_Period)
+            ax.set_xticklabels(['sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
+            
+            #ax.set_xticklabels(['', 'sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
+            #ax.grid()
+        for ax in (ax2,ax5):
+            #
+            #print('*** ', ax.get_xticks() )
+            tmp_x = ax.set_xticklabels(['', *[str(int((x%24)/daily_Period) ) for x in ax.get_xticks()[1:]]])
+            #ax.grid()
         #
         if not foutname is None:
             pth,nm = os.path.split(foutname)
@@ -1033,6 +1076,9 @@ class SACCT_data_handler(object):
                 os.makedirs(pth)
             #
             plt.savefig(foutname)
+        #
+        for ax in [ax1, ax2, ax3, ax4, ax5, ax6]:
+            ax.grid(True)
         #
         return {'cpu_hourly':cpu_hourly, 'jobs_hourly':jobs_hourly, 'cpu_weekly':cpu_weekly, 'jobs_weekly':jobs_weekly}
 
