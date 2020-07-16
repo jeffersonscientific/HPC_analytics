@@ -302,6 +302,7 @@ class SACCT_data_handler(object):
                 P = mpp.Pool(n_cpu)
                 self.headers = headers
                 #
+                # TODO: how do we make this work with max_rows limit?
                 # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
                 # for the use of P.map(), using a context manager and functools.partial()
                 results = P.map_async(self.process_row, fin, chunksize=chunk_size)
@@ -657,7 +658,7 @@ class SACCT_data_handler(object):
         return CPU_H
     #
     #@numba.jit
-    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, verbose=0):
+    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None):
         '''
         # @n_points: number of points in returned time series.
         # @bin_size: size of bins. This will override n_points
@@ -669,18 +670,27 @@ class SACCT_data_handler(object):
         #. we can trap an all-false (empty) boolean index as sum(ix)==0 or a positonal index like len(x)==0,
         #. but there are corner cases to trying to trap both efficiently. so let's just trap positional cases for now.
         null_return = lambda: numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
+        if verbose is None:
+            verbose = self.verbose
+        #
+        n_cpu = n_cpu or self.n_cpu
+        #
         if (not ix is None) and len(ix)==0:
             #return numpy.array([(0.),(0.),(0.)], dtype=[('time', '>f8'), 
             #return numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
             return null_return()
         #
-        if ix is None:
+        if jobs_summary is None:
             jobs_summary=self.jobs_summary
-        else:
-            jobs_summary = self.jobs_summary[ix]
+        if not ix is None:
+            jobs_summary=jobs_summary[ix]
+#        if ix is None:
+#            jobs_summary=self.jobs_summary
+#        else:
+#            jobs_summary = self.jobs_summary[ix]
         #
-        #t_now = mpd.date2num( dtm.datetime.now() )
-        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+        if t_now is None:
+            t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
         #
         if len(jobs_summary)==0:
             return null_return()
@@ -694,7 +704,9 @@ class SACCT_data_handler(object):
         if t_min is None:
             t_min = numpy.nanmin([t_start, t_end])
         #
-        print('** DEBUG: shapes:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
+        if verbose:
+            print('** DEBUG: shapes:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
+        #
         if len(t_start)==1:
             print('** ** **: t_start, t_end: ', t_start, t_end)
         #
@@ -704,22 +716,30 @@ class SACCT_data_handler(object):
             print('Exception: no data:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
             return null_return()
         #
-        t_max = numpy.nanmax([t_start, t_end])
+        if t_max is None:
+            t_max = numpy.nanmax([t_start, t_end])
         #
-        if bin_size is None:
-            #X = numpy.linspace(t_min, t_max, n_points)
-            output = numpy.zeros( n_points, dtype=[('time', '>f8'),
-                                                    ('N_jobs', '>f8'),
-                                                    ('N_cpu', '>f8')])
-            output['time'] = numpy.linspace(t_min, t_max, n_points)
-        else:
-            X = numpy.arange(t_min, t_max, bin_size)
-            output = numpy.zeros( len(X), dtype=[('time', '>f8'),
-                                                ('N_jobs', '>f8'),
-                                                ('N_cpu', '>f8')])
-            output['time'] = X
-            del X
+        if not (bin_size is None or t_min is None or t_max is None):
+            n_points = int(numpy.ceil(t_max-n_min)/bin_size)
+        output = numpy.zeros( n_points, dtype=[('time', '>f8'),
+                    ('N_jobs', '>f8'),
+                    ('N_cpu', '>f8')])
+        output['time'] = numpy.linspace(t_min, t_max, n_points)
         #
+#        if bin_size is None:
+#            #X = numpy.linspace(t_min, t_max, n_points)
+#            output = numpy.zeros( n_points, dtype=[('time', '>f8'),
+#                                                    ('N_jobs', '>f8'),
+#                                                    ('N_cpu', '>f8')])
+#            output['time'] = numpy.linspace(t_min, t_max, n_points)
+#        else:
+#            X = numpy.arange(t_min, t_max, bin_size)
+#            output = numpy.zeros( len(X), dtype=[('time', '>f8'),
+#                                                ('N_jobs', '>f8'),
+#                                                ('N_cpu', '>f8')])
+#            output['time'] = X
+#            del X
+#        #
         #Ns = numpy.zeros(len(X))
         #Ns_cpu = numpy.zeros(len(X))
         #
@@ -747,16 +767,43 @@ class SACCT_data_handler(object):
         #
         # Here's the blocked out loop-loop version. Vectorized was originally much faster, but maybe if we pre-set the array
         #
-        for j, t in enumerate(output['time']):
-            ix_t = numpy.where(numpy.logical_and(t_start<=t, t_end>t))[0]
+        if n_cpu==1:
+            for j, t in enumerate(output['time']):
+                ix_t = numpy.where(numpy.logical_and(t_start<=t, t_end>t))[0]
+                #
+                output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
+                if verbose and j%1000==0:
+                    print('*** PROGRESS: {}/{}'.format(j,len(output)))
+                    print('*** ', output[j-10:j])
+            #return output
+        else:
+            with mpp.Pool(n_cpu) as P:
+                # active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=1, jobs_summary=None, verbose=0)
+                dk=int(numpy.ceil(len(jobs_summary)/n_cpu))
+
+                res = [P.apply_async(self.active_jobs_cpu, kwds={"n_points":n_points, "ix":None, "bin_size":bin_size,
+                     "t_min":t_min, "t_max":t_max, "t_now":t_now, "n_cpu":1, "jobs_summary":jobs_summary[dk*k:dk*(k+1)],
+                      "verbose":verbose}) for k in range(n_cpu) ]
+                #
+                # one or more part of this syntax is not right... or maybe just not supported. Break it out:
+                for r in res:
+                    # I wish there was a better way to do this, but I'm coming up short... we can be a little more memory friendly
+                    #  (maybe?) by dumping the redundant X component.
+                    out_r = r.get()[['N_jobs', 'N_cpu']]
+                    #
+                    #output[['N_jobs', 'N_cpu']][:] += r.get()[['N_jobs', 'N_cpu']][:]
+                    output['N_jobs'] += out_r['N_jobs']
+                    output['N_cpu']  += out_r['N_cpu']
+                    del out_r
+                #
             #
-            output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
-            if verbose and j%1000==0:
-                print('*** PROGRESS: {}/{}'.format(j,len(output)))
-                print('*** ', output[j-10:j])
-        #
         return output
+
     #
+    def process_ajc_row(self, output, j, t_start, t_end, t):
+        ix_t = numpy.where(numpy.logical_and(t_start<=t, t_end>t))[0]
+        output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
+        #
     def get_wait_stats(self):
         # TODO: revise this to use a structured array, not a recarray.
         wait_stats = numpy.core.records.fromarrays(numpy.zeros((len(self.jobs_summary), 6)).T,
