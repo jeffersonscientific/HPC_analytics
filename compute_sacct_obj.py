@@ -63,17 +63,17 @@ else:
 	#
 #
 
-#system_name='mazama_0623'
-system_name=data_fname_root
-#groups_fname='mazama_groups.json'
-groups_fname={'ALL':list(set(sacct_mazama.jobs_summary['User']))}
-output_path = 'output/{}_HPC_analytics'.format(system_name)
-print('*** cleaning up old out_path...')
-sp_status = subprocess.run(['rm', '-rf', output_path])
-print('*** out_path (should be) removed: ', sp_status)
+##system_name='mazama_0623'
+#system_name=data_fname_root
+##groups_fname='mazama_groups.json'
+#groups_fname={'ALL':list(set(sacct_mazama.jobs_summary['User']))}
+#output_path = 'output/{}_HPC_analytics'.format(system_name)
+#print('*** cleaning up old out_path...')
+#sp_status = subprocess.run(['rm', '-rf', output_path])
+#print('*** out_path (should be) removed: ', sp_status)
 #
-print('*** Compute report:')
-mazama_report = hpc_lib.SACCT_groups_analyzer_report(out_path=output_path, groups=groups_fname,
-                                            tex_filename=tex_fname,
-                                            SACCT_obj=sacct_mazama, max_rws=None)
+#print('*** Compute report:')
+#mazama_report = hpc_lib.SACCT_groups_analyzer_report(out_path=output_path, groups=groups_fname,
+#                                            tex_filename=tex_fname,
+#                                            SACCT_obj=sacct_mazama, max_rws=None)
 
