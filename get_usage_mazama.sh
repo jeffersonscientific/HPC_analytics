@@ -4,7 +4,6 @@
 #SBATCH -e data/sacct_mazama_out_%j.err
 
 # can we pass "\t" correctly? maybe for now, just use the HPC standard "|" as a delimiter...
-<<<<<<< HEAD
 #
 STARTTIME1="2019-12-01"
 STARTTIME2="2020-03-15"

@@ -665,6 +665,8 @@ class SACCT_data_handler(object):
         # @t_min: start time (aka, bin phase).
         # @ix: an index, aka user=my_user
         '''
+        # DEBUG: for now, just set n_cpu=1. we should be able to run this and fix the mpp later...
+        #n_cpu=1
         #
         # try to trap for an empty set. ix can be booldan (len(ix)==len(data) ) or positional (len(ix) = len(subset) ).
         #. we can trap an all-false (empty) boolean index as sum(ix)==0 or a positonal index like len(x)==0,
