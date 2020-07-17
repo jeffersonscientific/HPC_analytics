@@ -783,15 +783,18 @@ class SACCT_data_handler(object):
                 # (star)map() method:
                 self.t_start = t_start
                 self.t_end=t_end
-                self.js=jobs_summary
+                self.ajc_js=jobs_summary
                 #
-                results = P.map_async(self.process_ajc_row, enumerate(output['time']) )
+                results = P.map_async(self.process_ajc_row, output['time'] )
                 #
-                r_njobs, r_ncpu = numpy.array(results.get()).T
-                output['N_jobs'] = r_njobs
-                output['N_cpu']  = r_ncpu
+                ##r_njobs, r_ncpu = numpy.array(results.get()).T
+                #R = numpy.array(results.get(()))
+                #output['N_jobs'] = R[:,0]
+                #output['N_cpu']  = R[:,1]
                 #
-                del results, r_njobs, r_ncpu
+                output['N_jobs'], output['N_cpu'] = numpy.array(results.get()).T
+                #
+                del results
                 #
 #                # recursive and apply_async() method:
 #                # this appears to work but uses quite a bit of memory. Can we improve by using Pool()
@@ -818,11 +821,13 @@ class SACCT_data_handler(object):
         return output
 
     #
+    @numba.jit
     #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
     def process_ajc_row(self, t):
+        #print('*** DEBUG: t:: {}'.format(t) )
         ix_t = numpy.where(numpy.logical_and(self.t_start<=t, self.t_end>t))[0]
         #output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
-        return len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
+        return len(ix_t), numpy.sum(self.ajc_js['NCPUS'][ix_t])
         #
     def get_wait_stats(self):
         # TODO: revise this to use a structured array, not a recarray.
