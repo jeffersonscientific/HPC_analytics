@@ -722,7 +722,7 @@ class SACCT_data_handler(object):
             t_max = numpy.nanmax([t_start, t_end])
         #
         if not (bin_size is None or t_min is None or t_max is None):
-            n_points = int(numpy.ceil(t_max-n_min)/bin_size)
+            n_points = int(numpy.ceil(t_max-t_min)/bin_size)
         output = numpy.zeros( n_points, dtype=[('time', '>f8'),
                     ('N_jobs', '>f8'),
                     ('N_cpu', '>f8')])
@@ -780,31 +780,49 @@ class SACCT_data_handler(object):
             #return output
         else:
             with mpp.Pool(n_cpu) as P:
-                # active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=1, jobs_summary=None, verbose=0)
-                dk=int(numpy.ceil(len(jobs_summary)/n_cpu))
-
-                res = [P.apply_async(self.active_jobs_cpu, kwds={"n_points":n_points, "ix":None, "bin_size":bin_size,
-                     "t_min":t_min, "t_max":t_max, "t_now":t_now, "n_cpu":1, "jobs_summary":jobs_summary[dk*k:dk*(k+1)],
-                      "verbose":verbose}) for k in range(n_cpu) ]
+                # (star)map() method:
+                self.t_start = t_start
+                self.t_end=t_end
+                self.js=jobs_summary
                 #
-                # one or more part of this syntax is not right... or maybe just not supported. Break it out:
-                for r in res:
-                    # I wish there was a better way to do this, but I'm coming up short... we can be a little more memory friendly
-                    #  (maybe?) by dumping the redundant X component.
-                    out_r = r.get()[['N_jobs', 'N_cpu']]
-                    #
-                    #output[['N_jobs', 'N_cpu']][:] += r.get()[['N_jobs', 'N_cpu']][:]
-                    output['N_jobs'] += out_r['N_jobs']
-                    output['N_cpu']  += out_r['N_cpu']
-                    del out_r
+                results = P.map_async(self.process_ajc_row, enumerate(output['time']) )
                 #
+                r_njobs, r_ncpu = numpy.array(results.get()).T
+                output['N_jobs'] = r_njobs
+                output['N_cpu']  = r_ncpu
+                #
+                del results, r_njobs, r_ncpu
+                #
+#                # recursive and apply_async() method:
+#                # this appears to work but uses quite a bit of memory. Can we improve by using Pool()
+#                # self call signature
+#                # active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=1, jobs_summary=None, verbose=0)
+#                dk=int(numpy.ceil(len(jobs_summary)/n_cpu))
+#
+#                res = [P.apply_async(self.active_jobs_cpu, kwds={"n_points":n_points, "ix":None, "bin_size":bin_size,
+#                     "t_min":t_min, "t_max":t_max, "t_now":t_now, "n_cpu":1, "jobs_summary":jobs_summary[dk*k:dk*(k+1)],
+#                      "verbose":verbose}) for k in range(n_cpu) ]
+#                #
+#                # one or more part of this syntax is not right... or maybe just not supported. Break it out:
+#                for r in res:
+#                    # I wish there was a better way to do this, but I'm coming up short... we can be a little more memory friendly
+#                    #  (maybe?) by dumping the redundant X component.
+#                    out_r = r.get()[['N_jobs', 'N_cpu']]
+#                    #
+#                    #output[['N_jobs', 'N_cpu']][:] += r.get()[['N_jobs', 'N_cpu']][:]
+#                    output['N_jobs'] += out_r['N_jobs']
+#                    output['N_cpu']  += out_r['N_cpu']
+#                    del out_r
+#                #
             #
         return output
 
     #
-    def process_ajc_row(self, output, j, t_start, t_end, t):
-        ix_t = numpy.where(numpy.logical_and(t_start<=t, t_end>t))[0]
-        output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
+    #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
+    def process_ajc_row(self, t):
+        ix_t = numpy.where(numpy.logical_and(self.t_start<=t, self.t_end>t))[0]
+        #output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
+        return len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
         #
     def get_wait_stats(self):
         # TODO: revise this to use a structured array, not a recarray.
