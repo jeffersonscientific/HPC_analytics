@@ -25,6 +25,8 @@ import pandas
 #. load this first, so on an HPC primary 
 import pylab as plt
 #
+day_2_sec=24.*3600.
+#
 # TODO: move group_ids, and local-specific things like that to site-specific  modules or data files.
 #
 mazama_groups_ids = ['tgp', 'sep', 'clab', 'beroza', 'lnt', 'ds', 'nsd', 'oxyvibtest', 'cardamom', 'crustal', 'stress', 'das', 'ess', 'astro', 'seaf', 'oneill', 'modules', 'wheel', 'ds2', 'shanna', 'issm', 'fs-uq-zechner', 'esitstaff', 'itstaff', 'sac-eess164', 'sac-lab', 'sac-lambin', 'sac-lobell', 'fs-bpsm', 'fs-scarp1', 'fs-erd', 'fs-sedtanks', 'fs-sedtanks-ro', 'fs-supria', 'web-rg-dekaslab', 'fs-cdfm', 'suprib', 'cees', 'suckale', 'schroeder', 'thomas', 'ere', 'smart_fields', 'temp', 'mayotte-collab']
@@ -56,35 +58,8 @@ def simple_date_string(dtm, delim='-'):
 #
 def elapsed_time_2_day(tm_in, verbose=0):
     #
-    # TODO: really??? why not just post the PL value?
-    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ):
-        return None
-    #
-    tm_ins = tm_in.split('-')
-    #
-    if len(tm_ins)==0:
-        return 0.
-    if len(tm_ins)==1:
-        days=0
-        tm=tm_ins[0]
-    if len(tm_ins)>1:
-        days = tm_ins[0]
-        tm = tm_ins[1]
-    #
-    #
-    if verbose:
-        try:
-            h,m,s = tm.split(':')
-        except:
-            print('*** AHHH!!! error! tm_in: {}, tm_ins: {}, tm: {}'.format(tm_in, tm_ins, tm) )
-            raise Exception("broke on elapsed time.")
-    else:
-        h,m,s = tm.split(':')
-        
-    #
-    #return (float(days)*24.*3600. + float(h)*3600. + float(m)*60. + float(s))/(3600.*24)
-    return float(days) + float(h)/24. + float(m)/(60.*24.) + float(s)/(3600.*24.) 
-                       
+    return elapsed_time_2_sec(tm_in=tm_in, verbose=verbose)/(day_2_sec)
+#
 def elapsed_time_2_sec(tm_in, verbose=0):
     #
     # TODO: really??? why not just post the PL value?
@@ -92,30 +67,24 @@ def elapsed_time_2_sec(tm_in, verbose=0):
     #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
         return None
     #
-    # guessing for now...
-    tm_ins = tm_in.split('-')
+    days, tm = ([0,0] + list(tm_in.split('-')))[-2:]
     #
-    if len(tm_ins)==0:
-        return 0.
-    if len(tm_ins)==1:
-        days=0
-        tm=tm_ins[0]
-    if len(tm_ins)>1:
-        days = tm_ins[0]
-        tm = tm_ins[1]
+    if tm==0:
+        return 0
+    days=float(days)
     #
-    
     if verbose:
         try:
-            h,m,s = tm.split(':')
+            h,m,s = numpy.append(numpy.zeros(3), numpy.array(tm.split(':')).astype(float))[-3:]
         except:
             print('*** AHHH!!! error! ', tm, tm_in)
             raise Exception("broke on elapsed time.")
     else:
-        h,m,s = tm.split(':')
+        h,m,s = numpy.append(numpy.zeros(3), numpy.array(tm.split(':')).astype(float))[-3:]
         
     #
-    return float(days)*24.*3600. + float(h)*3600. + float(m)*60. + float(s)
+    return numpy.dot([day_2_sec, 3600., 60., 1.], [float(x) for x in (days, h, m, s)])
+    #return float(days)*day_2_sec + float(h)*3600. + float(m)*60. + float(s)
 #
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
@@ -129,8 +98,8 @@ class SACCT_data_handler(object):
                 'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
                         'Eligible':dtm_handler_default,
                     'Elapsed':elapsed_time_2_day, 'MaxRSS':str,
-            'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':str, 'UserCPU':str,
-            'TotalCPU':str}
+            'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 
+                        'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day}
     #
     time_units_labels={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes','minute':'minutes', 'minutes':'minutes', 'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
     #    
