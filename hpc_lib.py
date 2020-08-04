@@ -56,10 +56,12 @@ def str2date_num(dt_str, verbose=0):
 def simple_date_string(dtm, delim='-'):
     return delim.join([str(x) for x in [dtm.year, dtm.month, dtm.day]])
 #
+#@numba.jit
 def elapsed_time_2_day(tm_in, verbose=0):
     #
     return elapsed_time_2_sec(tm_in=tm_in, verbose=verbose)/(day_2_sec)
 #
+#@numba.jit
 def elapsed_time_2_sec(tm_in, verbose=0):
     #
     # TODO: really??? why not just post the PL value?
@@ -85,6 +87,39 @@ def elapsed_time_2_sec(tm_in, verbose=0):
     #
     return numpy.dot([day_2_sec, 3600., 60., 1.], [float(x) for x in (days, h, m, s)])
     #return float(days)*day_2_sec + float(h)*3600. + float(m)*60. + float(s)
+#
+# TO_DO: can we vectorize? might have to expand/split() first, then to the math parts.
+def elapsed_time_2_sec_v(tm_in, verbose=0):
+    #
+    tm_in = numpy.atleast_1d(tm_in)
+    #
+    tm_in = nm_in[numpy.logical_or(tm_in=='Partition_Limit', tm_in=='UNLIMITED')]
+    # TODO: really??? why not just post the PL value?
+    #if tm_in in ( 'Partition_Limit', 'UNLIMITED' ):
+    #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
+    #    return None
+    #
+    days, tm = ([0,0] + list(tm_in.split('-')))[-2:]
+    #
+    if tm==0:
+        return 0
+    days=float(days)
+    #
+    if verbose:
+        try:
+            h,m,s = numpy.append(numpy.zeros(3), numpy.array(tm.split(':')).astype(float))[-3:]
+        except:
+            print('*** AHHH!!! error! ', tm, tm_in)
+            raise Exception("broke on elapsed time.")
+    else:
+        h,m,s = numpy.append(numpy.zeros(3), numpy.array(tm.split(':')).astype(float))[-3:]
+        
+    #
+    return numpy.dot([day_2_sec, 3600., 60., 1.], [float(x) for x in (days, h, m, s)])
+    #return float(days)*day_2_sec + float(h)*3600. + float(m)*60. + float(s)
+#
+
+
 #
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
@@ -222,7 +257,7 @@ class SACCT_data_handler(object):
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
         # TODO: parallelize this...
-        self.cpu_usage = self.active_jobs_cpu()
+        self.cpu_usage = self.active_jobs_cpu(n_cpu=None)
     #
     #
     #@numba.jit
@@ -245,6 +280,7 @@ class SACCT_data_handler(object):
                 print('*** headers_rw: ', headers_rw)
             #headers = headers_rw[:-1].split(delim)[:-1]
             headers = headers_rw[:-1].split(delim)[:-1] + ['JobID_parent']
+            self.headers = headers
             #
             # make a row-handler dictionary, until we have proper indices.
             RH = {h:k for k,h in enumerate(headers)}
@@ -269,7 +305,7 @@ class SACCT_data_handler(object):
             if n_cpu > 1:
                 # TODO: use a context manager syntax instead of open(), close(), etc.
                 P = mpp.Pool(n_cpu)
-                self.headers = headers
+                #self.headers = headers
                 #
                 # TODO: how do we make this work with max_rows limit?
                 # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
@@ -340,7 +376,7 @@ class SACCT_data_handler(object):
 #    @numba.jit
 #    def get_cpu_hours_2(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
 #        '''
-#        # NOTE: it might still be better to transpose the looping, but doint it this was makes computing weekly, daily, etc.
+#        # NOTE: it might still be better to transpose the looping, but doing it this was makes computing weekly, daily, etc.
 #        #  bin sizes a little more complicated, so let's just skip it for now (but keep this code in place, 'lest we want to
 #        #  repurpose it later.
 #        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
@@ -535,7 +571,8 @@ class SACCT_data_handler(object):
     #
     #
     #@numba.jit
-    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
+                     n_cpu=None):
         '''
         # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
         #  intermediat/transient arrays.
@@ -545,6 +582,10 @@ class SACCT_data_handler(object):
         # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
         #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
         '''
+        #
+        # stash a copy of input prams:
+        inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
+        n_cpu = (n_cpu or self.n_cpu)
         #
         # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something)
         #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
@@ -565,21 +606,22 @@ class SACCT_data_handler(object):
             jobs_summary = jobs_summary[IX]
         #
         t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+        #print('*** shape(t_now): ', numpy.shape(t_now))
         if verbose:
             print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
         #
-        if len(jobs_summary)==0:
-            return numpy.array([], dtype=[('time', '>f8'),
+        cpuh_dtype = [('time', '>f8'),
             ('t_start', '>f8'),
             ('cpu_hours', '>f8'),
-            ('N_jobs', '>f8')])
+            ('N_jobs', '>f8')]
+        #
+        if len(jobs_summary)==0:
+            return numpy.array([], dtype=cpuh_dtype)
         #
         # NOTE: See above discussion RE: [None] index and array column rank.
         t_start = jobs_summary['Start']
-        #t_start = jobs_summary['Start'][0]
-        #
         t_end = jobs_summary['End'].copy()
-        #t_end = jobs_summary['End'][0]
+        #
         if verbose:
             print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
         #
@@ -589,16 +631,65 @@ class SACCT_data_handler(object):
         if verbose:
             print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
         #
-        #
         if t_min is None:
             t_min = numpy.nanmin([t_start, t_end])
-        t_max = numpy.nanmax([t_start, t_end])
+        #
+        if t_max is None:
+            t_max = numpy.nanmax([t_start, t_end])
+        #
+        # recursive MPP handler:
+        #  this one is a little bit complicated by the use of linspace(a,b,n), sice linspae is inclusive for both a,b
+        #  so we have to do a trick to avoid douple-calculationg (copying) the intersections (b_k-1 = a_k)
+        if n_cpu>1:
+            #
+            time_axis = numpy.linspace(t_min, t_max, n_points)
+            dk = int(numpy.ceil(n_points/n_cpu))
+            k_ps = numpy.arange(0, n_points, dk)
+            if not k_ps[-1]==n_points:
+                k_ps = numpy.append(k_ps, [n_points])
+            print('*** k_ps: ', k_ps)
+            #
+            
+            #
+            #t_intervals = numpy.linspace(t_min, t_max, n_cpu+1)
+            #dt = (t_max - t_min)/n_points
+            #
+            with mpp.Pool(n_cpu) as P:
+                R = []
+                #for k_p, (t1, t2) in enumerate(zip(t_intervals[0:-1], t_intervals[1:])):
+                for k1, k2 in zip(k_ps[0:-1], k_ps[1:]):
+                    t1 = time_axis[k1]
+                    t2 = time_axis[k2-1]
+                    
+                    my_inputs = inputs.copy()
+                    # TODO: need to clean up integer mismatches on n_points. I think the best thing to do is to just
+                    # instantiate a full X sequence and parse it for x_min, x_max, len(x). For now, this should run.                    
+                    #my_inputs.update({'t_min':t1, 't_max':t2 - dt*(k_p<float(n_cpu-1)), 'n_cpu':1, 
+                    my_inputs.update({'t_min':t1, 't_max':t2, 'n_cpu':1,'n_points':int(k2-k1)})
+                    print('*** my_inputs: ', my_inputs)
+                    #
+                    R += [P.apply_async(self.get_cpu_hours, kwds=my_inputs.copy())]
+                #
+                res = [r.get() for r in R]
+                #
+                # create a structured array for the whole set:
+                CPU_H_mpp = numpy.zeros( (0, ), dtype=cpuh_dtype)
+                k0=0
+                for k,r in enumerate(res):
+                    #print('*** receiving r:: ', numpy.shape(r))
+                    #CPU_H_mpp[k0:k0+len(r)][:] = r[:]
+                    CPU_H_mpp = numpy.append(CPU_H_mpp, r)
+                    k0+=len(r)
+                #
+                return CPU_H_mpp
         #
         #
-        CPU_H = numpy.zeros( (n_points, ), dtype=[('time', '>f8'),
-                                                    ('t_start', '>f8'),
-                                                    ('cpu_hours', '>f8'),
-                                                    ('N_jobs', '>f8')])
+        CPU_H = numpy.zeros( (n_points, ), dtype=cpuh_dtype)
+        
+        #print('*** DEBUG: shapes:: ', numpy.shape(t_now), numpy.shape(t_min), numpy.shape(t_max), numpy.shape(n_points), 
+        #      numpy.shape(t_start), numpy.shape(t_end),
+        #      numpy.shape(numpy.linspace(t_min, t_max, n_points)))
+        #
         CPU_H['time'] = numpy.linspace(t_min, t_max, n_points)
         CPU_H['t_start'] = CPU_H['time']-bin_size
         #
@@ -624,10 +715,11 @@ class SACCT_data_handler(object):
                 numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] ), N_ix
         #
         #CPU_H['cpu_hours']*=24.
+        #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
         return CPU_H
     #
     #@numba.jit
-    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None):
+    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
         '''
         # @n_points: number of points in returned time series.
         # @bin_size: size of bins. This will override n_points
@@ -655,10 +747,6 @@ class SACCT_data_handler(object):
             jobs_summary=self.jobs_summary
         if not ix is None:
             jobs_summary=jobs_summary[ix]
-#        if ix is None:
-#            jobs_summary=self.jobs_summary
-#        else:
-#            jobs_summary = self.jobs_summary[ix]
         #
         if t_now is None:
             t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
@@ -747,23 +835,43 @@ class SACCT_data_handler(object):
                     print('*** PROGRESS: {}/{}'.format(j,len(output)))
                     print('*** ', output[j-10:j])
             #return output
-        else:
+        else:   
             with mpp.Pool(n_cpu) as P:
                 # (star)map() method:
-                self.t_start = t_start
-                self.t_end=t_end
-                self.ajc_js=jobs_summary
+                
+                #self.t_start = t_start
+                #self.t_end=t_end
+                #self.ajc_js=jobs_summary
+                print('*** executing in MPP mode...')
                 #
-                results = P.map_async(self.process_ajc_row, output['time'] )
+                #results = P.map_async(self.process_ajc_row_2, output['time'] )
+                # uhhh duh... i'd meant to pass this back to itself recursively, but instead i did this... 
+                #. but i think i can use ajc_row_2 for both spp and mpp, so we'll see how that goes...
+                dk = int(numpy.ceil( len(output)/n_cpu ))
+                results = [P.apply_async(self.process_ajc_row_2,
+                                         kwds={'t':output['time'][dk*k:dk*(k+1)], 't_start':t_start,
+                                               't_end':t_end, 'NCPUs':jobs_summary['NCPUS']}) for k in range(n_cpu)]
+                #P.join()
+                R = [r.get() for r in results]
                 #
-                ##r_njobs, r_ncpu = numpy.array(results.get()).T
-                #R = numpy.array(results.get(()))
-                #output['N_jobs'] = R[:,0]
-                #output['N_cpu']  = R[:,1]
+                #O_jobs = numpy.zeros(len(output))
+                #O_ncpu = numpy.zeros(len(output))
+                Out_tmp = numpy.array(R[0]).copy()
+                k_r=0
+                for r in R[1:]:
+                    #
+                    Out_tmp = numpy.append(Out_tmp, numpy.array(r), axis=1)
+                    k_r += len(r)
                 #
-                output['N_jobs'], output['N_cpu'] = numpy.array(results.get()).T
+                output['N_jobs'], output['N_cpu'] = Out_tmp[0], Out_tmp[1]
                 #
-                del results
+                del Out_tmp
+                
+                
+                #
+                #output['N_jobs'], output['N_cpu'] = numpy.array(results.get()).T
+                #
+                #del results
                 #
 #                # recursive and apply_async() method:
 #                # this appears to work but uses quite a bit of memory. Can we improve by using Pool()
@@ -786,10 +894,21 @@ class SACCT_data_handler(object):
 #                    output['N_cpu']  += out_r['N_cpu']
 #                    del out_r
 #                #
+            del P, R, results
             #
         return output
 
     #
+    def process_ajc_row_2(self, t, t_start, t_end, NCPUs):
+        
+        #print('*** DEBUG: {} ** {}'.format(len(t_start), len(t_end)))
+        ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
+        #
+        #N=numpy.sum(ix_t, axis=1)
+        #C=numpy.sum(NCPUs.reshape(1,-1), axis=1)
+        #
+        # TODO: there is a proper syntax fir the NCPUs calc...
+        return numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])
     @numba.jit
     #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
     def process_ajc_row(self, t):
