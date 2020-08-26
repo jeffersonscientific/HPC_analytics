@@ -59,13 +59,17 @@ def simple_date_string(dtm, delim='-'):
 #@numba.jit
 def elapsed_time_2_day(tm_in, verbose=0):
     #
+    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
+    #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
+        return None
+    #
     return elapsed_time_2_sec(tm_in=tm_in, verbose=verbose)/(day_2_sec)
 #
 #@numba.jit
 def elapsed_time_2_sec(tm_in, verbose=0):
     #
     # TODO: really??? why not just post the PL value?
-    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ):
+    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
     #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
         return None
     #
@@ -141,7 +145,15 @@ class SACCT_data_handler(object):
     time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
     #
     #
-    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None, verbose=0):
+    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
+                 n_points_usage=1000, verbose=0, keep_raw_data=False):
+        '''
+        # handler object for sacct data.
+        #
+        #@keep_raw_data: we compute a jobs_summary[] table, which probably needs to be an HDF5 object, as per memory
+        #  requirements, But for starters, let's optinally dump the raw data. we shouldn't actually need it for
+        #  anything we're doing right now. if it comes to it, maybe we dump it as an HDF5 or actually build a DB of some sort.
+        '''
         #
         if types_dict is None:
             #
@@ -250,14 +262,18 @@ class SACCT_data_handler(object):
         #. Elapsed time. Start -> min(Start[]), End -> max(End[]), NCPU -> (NCPU of parent job or 
         #. max(NCPU)). For performance, we'll do well to not have to do logical, string-like operations --
         #  aka, do algebraic type operations.
-        #
-        # let's compute this by default...
+        if not keep_raw_data:
+            del data
         #
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
-        # TODO: parallelize this...
-        self.cpu_usage = self.active_jobs_cpu(n_cpu=None)
+        # TODO: (re-)parallelize this...?? running continuously into problems with pickled objects being too big, so
+        #   we need to be smarter about how we parallelize. Also, parallelization is just costing a lot of memory (like 15 GB/CPU -- which
+        #   seems too much, so could be a mistake, but probalby not, since I'm pretty sure I ran a smilar job in SPP on <8GB).
+        self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
+        self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
+        self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
     #
     #
     #@numba.jit
@@ -310,6 +326,10 @@ class SACCT_data_handler(object):
                 # TODO: how do we make this work with max_rows limit?
                 # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
                 # for the use of P.map(), using a context manager and functools.partial()
+                # TODO: use an out-of-class variation of process_row(), or modify the in-class so MPP does not need
+                #   to pickle over the whole object, which breaks for large data sets. tentatively, use apply_async() and just pass
+                #   headers, types_dict, and RH.
+                #   def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={})
                 results = P.map_async(self.process_row, fin, chunksize=chunk_size)
                 P.close()
                 P.join()
@@ -365,6 +385,8 @@ class SACCT_data_handler(object):
     @numba.jit
     def process_row(self, rw):
         # use this with MPP processing:
+        # ... but TODO: it looks like this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
+        #  class object... so we need to move the MPP object out of class.
         #
         # use this for MPP processing:
         rws = rw.split(self.delim)
@@ -642,12 +664,14 @@ class SACCT_data_handler(object):
         #  so we have to do a trick to avoid douple-calculationg (copying) the intersections (b_k-1 = a_k)
         if n_cpu>1:
             #
+            # TODO: do this with a linspace().astype(int)
             time_axis = numpy.linspace(t_min, t_max, n_points)
-            dk = int(numpy.ceil(n_points/n_cpu))
+            dk = min(int(numpy.ceil(n_points/n_cpu)),1000)
             k_ps = numpy.arange(0, n_points, dk)
             if not k_ps[-1]==n_points:
                 k_ps = numpy.append(k_ps, [n_points])
-            print('*** k_ps: ', k_ps)
+            if verbose:
+                print('*** k_ps: ', k_ps)
             #
             
             #
@@ -666,11 +690,14 @@ class SACCT_data_handler(object):
                     # instantiate a full X sequence and parse it for x_min, x_max, len(x). For now, this should run.                    
                     #my_inputs.update({'t_min':t1, 't_max':t2 - dt*(k_p<float(n_cpu-1)), 'n_cpu':1, 
                     my_inputs.update({'t_min':t1, 't_max':t2, 'n_cpu':1,'n_points':int(k2-k1)})
-                    print('*** my_inputs: ', my_inputs)
+                    if verbose:
+                        print('*** my_inputs: ', my_inputs)
                     #
                     R += [P.apply_async(self.get_cpu_hours, kwds=my_inputs.copy())]
-                #
-                res = [r.get() for r in R]
+                    #
+                    res = [r.get() for r in R]
+                # join()? not clear on this with a context manager..
+                #P.join()
                 #
                 # create a structured array for the whole set:
                 CPU_H_mpp = numpy.zeros( (0, ), dtype=cpuh_dtype)
@@ -736,6 +763,7 @@ class SACCT_data_handler(object):
         if verbose is None:
             verbose = self.verbose
         #
+        mpp_chunksize = mpp_chunksize or self.chunk_size
         n_cpu = n_cpu or self.n_cpu
         #
         if (not ix is None) and len(ix)==0:
@@ -839,61 +867,33 @@ class SACCT_data_handler(object):
             with mpp.Pool(n_cpu) as P:
                 # (star)map() method:
                 
-                #self.t_start = t_start
-                #self.t_end=t_end
-                #self.ajc_js=jobs_summary
-                print('*** executing in MPP mode...')
                 #
-                #results = P.map_async(self.process_ajc_row_2, output['time'] )
-                # uhhh duh... i'd meant to pass this back to itself recursively, but instead i did this... 
-                #. but i think i can use ajc_row_2 for both spp and mpp, so we'll see how that goes...
-                dk = int(numpy.ceil( len(output)/n_cpu ))
-                results = [P.apply_async(self.process_ajc_row_2,
-                                         kwds={'t':output['time'][dk*k:dk*(k+1)], 't_start':t_start,
-                                               't_end':t_end, 'NCPUs':jobs_summary['NCPUS']}) for k in range(n_cpu)]
-                #P.join()
+                #print('*** executing in MPP mode...')
+                # NOTE: large data sets break this if t_start, t_end inputs become very very large, which exceeds
+                #. the pickling capacity, so for MPP we need to break up t_start, t_end. map_async() probably knows
+                #  how to do this properly, or we can use apply_async and write a simple algorithm to limit the number
+                #  of t_start, t_end records pased. we might even just do a loop-lop with @jit compilation... but first,
+                #  let's try a map...
+                # need to break this into small enough chunks to not break the pickle() indexing.
+                n_procs = min(numpy.ceil(len(t_start)/n_cpu).astype(int), numpy.ceil(len(t_start)/mpp_chunksize).astype(int) )
+                ks_r = numpy.linspace(0, len(t_start), n_procs+1).astype(int)
+                #print('*** DEBUG: KS_R: ', ks_r)
+                #
+                #ks_r = numpy.linspace(t_min, t_max, n_cpu).astype(int)
+                results = [P.apply_async(self.process_ajc_row_2,  kwds={'t':output['time'], 't_start':t_start[k1:k2],
+                            't_end':t_end[k1:k2], 'NCPUs':jobs_summary['NCPUS'][k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
+                #
                 R = [r.get() for r in results]
+                # join the pool? this throws a "pool still running" error... ???
+                #P.join()
                 #
-                #O_jobs = numpy.zeros(len(output))
-                #O_ncpu = numpy.zeros(len(output))
-                Out_tmp = numpy.array(R[0]).copy()
-                k_r=0
-                for r in R[1:]:
-                    #
-                    Out_tmp = numpy.append(Out_tmp, numpy.array(r), axis=1)
-                    k_r += len(r)
-                #
-                output['N_jobs'], output['N_cpu'] = Out_tmp[0], Out_tmp[1]
-                #
-                del Out_tmp
-                
-                
-                #
-                #output['N_jobs'], output['N_cpu'] = numpy.array(results.get()).T
-                #
-                #del results
-                #
-#                # recursive and apply_async() method:
-#                # this appears to work but uses quite a bit of memory. Can we improve by using Pool()
-#                # self call signature
-#                # active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=1, jobs_summary=None, verbose=0)
-#                dk=int(numpy.ceil(len(jobs_summary)/n_cpu))
-#
-#                res = [P.apply_async(self.active_jobs_cpu, kwds={"n_points":n_points, "ix":None, "bin_size":bin_size,
-#                     "t_min":t_min, "t_max":t_max, "t_now":t_now, "n_cpu":1, "jobs_summary":jobs_summary[dk*k:dk*(k+1)],
-#                      "verbose":verbose}) for k in range(n_cpu) ]
-#                #
-#                # one or more part of this syntax is not right... or maybe just not supported. Break it out:
-#                for r in res:
-#                    # I wish there was a better way to do this, but I'm coming up short... we can be a little more memory friendly
-#                    #  (maybe?) by dumping the redundant X component.
-#                    out_r = r.get()[['N_jobs', 'N_cpu']]
-#                    #
-#                    #output[['N_jobs', 'N_cpu']][:] += r.get()[['N_jobs', 'N_cpu']][:]
-#                    output['N_jobs'] += out_r['N_jobs']
-#                    output['N_cpu']  += out_r['N_cpu']
-#                    del out_r
-#                #
+            #print('** Shape(R): ', numpy.shape(results))
+            # TODO: how do we numpy.sum(R) on the proper axis?
+            for k_r, (r_nj, r_ncpu) in enumerate(R):
+                #print('**** [{}]: {} ** {}'.format(k_r, r_nj[0:10], r_ncpu[0:10]))
+                output['N_jobs'] += numpy.array(r_nj)
+                output['N_cpu']  += numpy.array(r_ncpu)
+            #
             del P, R, results
             #
         return output
@@ -907,8 +907,10 @@ class SACCT_data_handler(object):
         #N=numpy.sum(ix_t, axis=1)
         #C=numpy.sum(NCPUs.reshape(1,-1), axis=1)
         #
-        # TODO: there is a proper syntax fir the NCPUs calc...
-        return numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])
+        # TODO: there is a proper syntax for the NCPUs calc...
+        #r_val = numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
+        #print('*** return from[{}], sh={} ** {}'.format(os.getpid(), r_val.shape, r_val[0][0:10]))
+        return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
     @numba.jit
     #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
     def process_ajc_row(self, t):
@@ -1061,9 +1063,9 @@ class SACCT_data_handler(object):
         #                                     + [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
         
     #
-    def get_submit_wait_timeofday(self, time_units='hours', qs=[.5, .75, .95]):
+    def get_submit_wait_timeofday(self, time_units='hours', qs=numpy.array([.5, .75, .95])):
         '''
-        # wait times as a functino fo time-of-day. Compute various quantiles for these values.
+        # wait times as a function fo time-of-day. Compute various quantiles for these values.
         # @time_units: {hours, days, and somme others}. References class scope time_units_labels consolidation dict and
         #.   self.time_units_vals{} to get the values for those. Base units are days, so ('hour', 'hours' 'hr') -> 24 (hrs/day)
         # @qs=[]: quantiles. default, [.5, .75, .95] give s the .5, .75, .95 quantiles.
@@ -1086,6 +1088,8 @@ class SACCT_data_handler(object):
         Y = (self.jobs_summary['Start']- self.jobs_summary['Submit'] )*u_time
         #
         # TODO: we were sorting for a reason, but do we still need to?
+        #  NOTE: also, we're sorting on the modulo sequence, so it's highly ambigous. My guess is we can just get rid of this,\
+        # but it's worth testing first.
         ix = numpy.argsort(X)
         X = X[ix].astype(int)    # NOTE: at some point, we might actually want the non-int X values...
         Y = Y[ix]
@@ -1539,7 +1543,7 @@ class SACCT_groups_analyzer_report(object):
             #jobs_per_path=os.path.join(output_path, jobs_per_name)
             #
             zz = SACCT_obj.active_cpu_jobs_per_day_hour_report(qs=qs,
-                                                figsize=fig_size, cpu_usage=act_jobs,foutname=None)
+                                                figsize=fig_size, cpu_usage=act_jobs,foutname=None, periodic_projection='polar')
             plt.suptitle('Instantaneous Usage: {}'.format(ky), size=16)
             #
             #
@@ -1711,7 +1715,60 @@ def time_bin_aggregates(XY, bin_mod=24, qs=numpy.array([.25, .5, .75])):
     return numpy.array([tuple(rw) for rw in stats_output], dtype=[('x', '>f8'), ('mean', '>f8'),
                                                         ('stdev', '>f8')] + 
                                          [('q_{}'.format(q), '>f8') for q in qs])
-    return X_out
+    #return X_out
 
 #
-
+#
+# helper functions:
+@numba.jit
+def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={}):
+    # use this with MPP processing:
+    # ... but TODO: it looks like in the Class() scope, this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
+    #  class object... so we need to move the MPP object out of class.
+    #  for now, let's assume that the map() (or whatever) will consolidate and (pseudo-)vectorize. Maybe this should be a Process() object....
+    #  or at lest a small class, initialized with all but rw (the iterable), so we can call it easily wiht map_async()
+    #
+    # use this for MPP processing:
+    rws = rw.split(delim)
+    #return [None if vl=='' else self.types_dict.get(col,str)(vl)
+    #            for k,(col,vl) in enumerate(zip(self.headers, rw.split(self.delim)[:-1]))]
+    return [None if vl=='' else types_dict.get(col,str)(vl)
+                for k,(col,vl) in enumerate(zip(headers, rws[:-1]))] + [rws[RH['JobID']].split('.')[0]]
+#
+@numba.jit
+def get_modulus_stats(X,Y, a_mult=1., a_mod=1., qs=numpy.array([.5, .75, .95])):
+    '''
+    # NOTE: in retrospect, this simple script has its moments of usefulness, but a lot of these cases still need
+    #  to be custom coded to get the right type of aggregation. In many cases -- namely where we are just counting
+    #  in some modulo bin, we need to define a second binning over which to do averaging (ie, k_week = k//k0, k_day=k%k0),
+    #  and we'd want to aggregate for each k_week, all of k_day. This can be expensive, so we might want to come up with
+    #  something simpler.
+    #
+    # stats of Y on X' = (x*a_mult)%a_mod.
+    # for example, to get hour-of-day from a X=mpd.date2num() sequence (where the integer unit is days), HoD=(X*24)%24.
+    #  to get Day of Week, DoW = (X*1)%7
+    #
+    # of course, this can be done with just a fraction (a_mult=1, a_mod={not-integer), but this can introduce numerical error
+    #  and is less intuitive to some.
+    '''
+    #
+    X_prime = (numpy.array(X)*a_mult)%a_mod
+    #
+    # note: this will come back sorted.
+    X0 = numpy.unique(X_prime)
+    #
+    # TODO: consider sorting and then k_j=index(X_sorted,j) -- or something like that.
+    #  a night-n-day performance improvement is not obvious; there are a couple of loops through
+    #  the vector to do this, and part of it has to be done outside of vectorization if we are to avoid
+    #  re-scanning the early part of the vector. so we'll save that for a later upgrade.
+    #
+    # ... and there probably is a way to do this by broadcasting over unique indices and then aggregating
+    #  over an axis, but it will cost some memory to do so, and the savings -- again , is not clear.
+    # ... and memory has been a problem in the past, so for now we'll walk a line with memory efficiency as a real consideration.
+    #
+    quantiles = numpy.array([numpy.percentile(Y[X_prime==j], 100.*numpy.array(qs)) for j in X0])
+    means = numpy.array([numpy.mean(Y[X_prime==j], 100.*numpy.array(qs)) for j in X0])
+    #
+    return numpy.core.records.fromarrays(numpy.append([X0, means], quantiles.T, axis=0),
+             dtype=[('time', '>f8'), ('mean', '>f8')] +
+            [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )

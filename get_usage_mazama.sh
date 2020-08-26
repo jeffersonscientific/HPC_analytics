@@ -19,13 +19,16 @@ FORMAT="User,Group,GID,Jobname,JobID,JobIDRaw,partition,state,time,ncpus,nnodes,
 #
 #srun sacct -a -p --delimiter="|" --starttime=${STARTTIME1} --endtime="2020-06-30" --format=${FORMAT}
 
-sacct -a -p --delimiter="|" --starttime="2019-12-01" --endtime="2019-12-15" --format=${FORMAT}
-sacct -a -p --noheader --delimiter="|" --starttime="2019-12-15" --endtime="2020-01-15" --format=${FORMAT}
+#sacct -a -p --delimiter="|" --starttime="2019-12-01" --endtime="2019-12-15" --format=${FORMAT}
+#sacct -a -p --noheader --delimiter="|" --starttime="2019-12-15" --endtime="2020-01-15" --format=${FORMAT}
 
-sacct -a -p --noheader --delimiter="|" --starttime="2020-01-15" --endtime="2020-02-15" --format=${FORMAT}
+sacct -a -p --delimiter="|" --starttime="2020-01-15" --endtime="2020-02-15" --format=${FORMAT}
 sacct -a -p --noheader --delimiter="|" --starttime="2020-02-15" --endtime="2020-03-15" --format=${FORMAT}
 sacct -a -p --noheader --delimiter="|" --starttime="2020-03-15" --endtime="2020-04-15" --format=${FORMAT}
 sacct -a -p --noheader --delimiter="|" --starttime="2020-04-15" --endtime="2020-05-15" --format=${FORMAT}
 sacct -a -p --noheader --delimiter="|" --starttime="2020-05-15" --endtime="2020-06-15" --format=${FORMAT}
 sacct -a -p --noheader --delimiter="|" --starttime="2020-06-15" --endtime="2020-07-15" --format=${FORMAT}
+
+sacct -a -p --noheader --delimiter="|" --starttime="2020-07-15" --endtime="2020-08-15" --format=${FORMAT}
+sacct -a -p --noheader --delimiter="|" --starttime="2020-08-15" --endtime="2020-09-15" --format=${FORMAT}
 
