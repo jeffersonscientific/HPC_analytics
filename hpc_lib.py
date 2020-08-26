@@ -1392,7 +1392,7 @@ class SACCT_groups_analyzer_report(object):
 
     def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
                  out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', groups=None,
-                 add_all_groups=True,
+                 add_all_groups=True, n_points_wkly_hrs=500, fig_size=(10,8),
                  fig_width='.8', qs=[.45, .5, .55], SACCT_obj=None, max_rws=None, group_exclusions=group_exclusions ):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
@@ -1403,8 +1403,8 @@ class SACCT_groups_analyzer_report(object):
         #
         self.make_report()
         
-    
-    def make_report(self, out_path=None, tex_filename=None, qs=None, max_rws=None, fig_width=None, verbose=1):
+    def make_report(self, out_path=None, tex_filename=None, qs=None, max_rws=None, fig_width=None, n_points_wkly_hrs=None,
+    fig_size=(10,8), verbose=1):
 
         # make some slides, including all the breakdown.
         # TODO: wrap this up into a class or function in HPC_lib.
@@ -1416,10 +1416,14 @@ class SACCT_groups_analyzer_report(object):
             out_path = self.out_path
         if tex_filename is None:
             tex_filename = self.tex_filename
+        if n_points_wkly_hrs is None:
+            n_points_wkly_hrs = self.n_points_wkly_hrs
         groups = self.groups
         if max_rws is None:
             max_rws = self.max_rws
         fig_width = str(fig_width or self.fig_width)
+        if fig_size is None:
+            fig_size=tuple((12,9))
         #
         SACCT_obj = self.SACCT_obj
         #
@@ -1437,14 +1441,14 @@ class SACCT_groups_analyzer_report(object):
                 groups = json.load(fin)
         #
         # add an "all" group, with all names from groups. This is an expensive way to "All", since
-        #. it wil build and search an index, butwe will benefit from simplicity.
+        #. it wil build and search an index, butwe will benS from simplicity.
         #
         if self.add_all_groups:
             #and not "all" in [s.lower() for s in groups.keys()]:
             groups['All'] = list(set([s for rw in groups.values() for s in rw]))
 
         print('keys: ', groups.keys() )
-        fig_size=tuple((12,9))
+        #
         for k, (ky,usrs) in enumerate(groups.items()):
             #
             # DEBUG:
@@ -1457,7 +1461,7 @@ class SACCT_groups_analyzer_report(object):
             #
             # tex corrected group name:
             grp_tex = ky.replace('_', '\_')
-            gpr_tex = ky.replace('\\_', '\_')
+            grp_tex = grp_tex.replace('\\_', '\_')
             #
             ix = numpy.where([s in usrs for s in SACCT_obj.jobs_summary['User'] ])
             #
@@ -1470,7 +1474,7 @@ class SACCT_groups_analyzer_report(object):
                 print('[{}]:: no records.'.format(ky))
                 continue
             #
-            wkly_hrs = SACCT_obj.get_cpu_hours(bin_size=7, n_points=500, IX=ix, verbose=0)
+            wkly_hrs = SACCT_obj.get_cpu_hours(bin_size=7, n_points=n_points_wkly_hrs, IX=ix, verbose=0)
             act_jobs = SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
             #
             # DEBUG:
@@ -1480,6 +1484,7 @@ class SACCT_groups_analyzer_report(object):
                 print('Group: {}:: no records.'.format(ky))
                 continue
             #
+            # active jobs/cpus and weekly cpu-hours:
             fg = plt.figure(figsize=fig_size)
             ax1 = plt.subplot('211')
             ax1.grid()
@@ -1490,7 +1495,9 @@ class SACCT_groups_analyzer_report(object):
             ax1.plot(act_jobs['time'], act_jobs['N_jobs'], ls='-', lw=2., marker='', label='Jobs', alpha=.5 )
             ax1a.plot(act_jobs['time'], act_jobs['N_cpu'], ls='--', lw=2., marker='', color='m',
                       label='CPUs', alpha=.5)
-            ax1a.set_title('Group: {}'.format(ky))
+            #ax1a.set_title('Group: {}'.format(ky))
+            fg.suptitle('Groaup: {}'.format(ky), size=16)
+            ax1a.set_title('Active Jobs, CPUs')
             #
             ax2.plot(wkly_hrs['time'], wkly_hrs['cpu_hours']/7., ls='-', marker='.', label='bins=7 day', zorder=11)
             #
@@ -1568,7 +1575,161 @@ class SACCT_groups_analyzer_report(object):
         #
     #
 #
+class SACCT_groups_analyzer_report_handler(object):
+
+    def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
+                 out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', n_points_wkly_hrs=500,
+                 fig_width_tex='.8', qs=[.45, .5, .55], SACCT_obj=None, max_rws=None ):
+        #
+        self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
+        #print('*** DEBUG: __init__: {}'.format(self.out_path))
+        #
+        #if self.groups is None:
+        #    self.groups={'All':list(set(SACCT_obj.jobs_summary['User']))}
+        #
+        self.HPC_tex_obj = Tex_Slides(Short_title=self.Short_title,
+                 Full_title=self.Full_title,
+        foutname=os.path.join(out_path, tex_filename))
+        #
+        
+    #
+    def standard_reports_slides(self, ix=None, out_path=None, group_name='group', qs=None, fig_width_tex=None )
+        ```
+        # Standard set of slides for a sub-group, defined by the index ix
+        ```
+        #
+        # Standard frontmatter bits:
+        if out_path is None:
+            out_path = self.out_path
+        qs = qs or self.qs
+        fig_width_tex = (fig_width_tex or self.fig_width_tex)
+        #
+        fig_size=self.fig_size
+        #
+        ###################################
+        #
+        # tex corrected group name:
+        group_name_tex = group_name.replace('_', '\_')
+        group_name_tex = group_name_tex.replace('\\_', '\_')
+        #
+        # make figures and add slides:
+        activity_figname = os.path.join(out_path, '{}_activity_ts.png'.format(group) )
+        periodic_figname = os.path.join(out_path, '{}_periodic_usage.png'.format(group) )
+        act_fig = self.activity_figure(ix=ix, fout_path_name=activity_figname)
+        per_fig = self.periodic_usage_figure(self, ix=None, fout_path_name=periodic_figname, qs=qs, fig_size=fig_size)
+        #
+        self.HPC_tex_obj.add_fig_slide(fig_title='{}: CPU/Jobs Requests'.format(group_name_tex),
+            width=fig_width_tex, fig_path=activity_figname)
+        #
+        self.HPC_tex_obj.add_fig_slide(fig_title='{}: Periodic usage'.format(group_name_tex),
+            width=fig_width_tex, fig_path=periodic_figname)
+        #
+        
+        
+    def activity_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, n_points_wkly_hrs=None, verbose=0):
+        # images then slides for just one group, which we define from an index.
+        #
+        # TODO:
+        # how is ix=None handled in called functions? ideally, we want to avoid passing a large index if possible.
+        if qs is None:
+            qs = self.qs
+        fig_size = (fig_size or self.fig_size)
+        #
+        if fout_path_name is None:
+            out_path = self.out_path
+            #cpu_usage_fig_name = os.path.join('figs', '{}_cpu_usage.png'.format(ky))
+            fname = 'cpu_usage.png'
+            fout_path_name = os.path.join(out_path, fname)
+        #
+        if n_points_wkly_hrs is None:
+            n_points_wkly_hrs = self.n_points_wkly_hrs
+        #
+        # compute figures:
+        wkly_hrs = SACCT_obj.get_cpu_hours(bin_size=7, n_points=n_points_wkly_hrs, IX=ix, verbose=0)
+        act_jobs = SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
+        #
+        if len(act_jobs)==0:
+            print('Group: {}:: no records.'.format(ky))
+            continue
+        #
+        # active jobs/cpus and weekly cpu-hours:
+        fg = plt.figure(figsize=fig_size)
+        ax1 = plt.subplot('211')
+        ax1.grid()
+        ax1a = ax1.twinx()
+        ax2 = plt.subplot('212', sharex=ax1)
+        ax2.grid()
+        #
+        ax1.plot(act_jobs['time'], act_jobs['N_jobs'], ls='-', lw=2., marker='', label='Jobs', alpha=.5 )
+        ax1a.plot(act_jobs['time'], act_jobs['N_cpu'], ls='--', lw=2., marker='', color='m',
+                  label='CPUs', alpha=.5)
+        #
+        fg.suptitle('Group: {}'.format(ky), size=16)
+        ax1a.set_title('Active Jobs, CPUs')
+        #
+        ax2.plot(wkly_hrs['time'], wkly_hrs['cpu_hours']/7., ls='-', marker='.', label='bins=7 day', zorder=11)
+        #
+        ax1.set_ylabel('$N_{jobs}$', size=14)
+        ax1a.set_ylabel('$N_{cpu}$', size=14)
+        #
+        ax1.legend(loc='upper left')
+        ax1a.legend(loc='upper right')
+        #
+        ax2.set_ylabel('Daily CPU hours', size=16)
+        #
+        fg.canvas.draw()
+        #
+        # set ax3 labels to dates:
+        # now format the datestrings...
+        for ax in (ax1,):
+            # TODO: FIXME: so... this grossly malfunctions for fs-scarp1. it picks up the second positional argument as text, instead of the first. aka:
+#                ticklabels:  [Text(737445.5269299999, 0, '0.000030'), Text(737445.526935, 0, '0.000035'), Text(737445.5269399999, 0, '0.000040'), Text(737445.5269449999, 0, '0.000045'), Text(737445.52695, 0, '0.000050'), Text(737445.5269549999, 0, '0.000055'), Text(737445.5269599999, 0, '0.000060')]
+#                ticklabels:  ['0.000030', '0.000035', '0.000040', '0.000045', '0.000050', '0.000055', '0.000060']
+#                from this:
+#                print('\nticklabels: ', [s for s in ax.get_xticklabels()])
+#                print('ticklabels: ', [s.get_text() for s in ax.get_xticklabels()])
+            #
+            #if ky in ('fs-scarp1'):
+            #    continue
+            #
+            # just trap this so that it works. could throw a warning...
+            try:
+                lbls = [simple_date_string(mpd.num2date( float(s.get_text())) ) for s in ax.get_xticklabels()]
+            except:
+                print('** WARNING: failed writing date text labels:: {}'.format('lbls = "[simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]" '))
+                print('"*** SysInfo: {}'.format(sys.exc_info()[0]))
+                print('*** trying to write x-ticks with failsafe mmpd.num2date(max(1, float(s.get_text())) )')
+                lbls = [simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]
+            #
+            ax.set_xticklabels(lbls)
+        #
+        #
+        # Save figure:
+        plt.savefig(fout_path_name)
 #######
+    def periodic_usage_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None):
+        ```
+        # periodic usage (aka, jobs per hour-of-day, etc.)
+        #
+        ```
+        #
+        if fig_size = None:
+            fig_size=self.fig_size
+        #
+        if qs is None:
+            qs =
+        #
+        if fout_path_name is None:
+            out_path = self.out_path
+            #
+            fname = 'periodic_usage.png'
+            fout_path_name = os.path.join(out_path, fname)
+        #
+        zz = SACCT_obj.active_cpu_jobs_per_day_hour_report(qs=qs,
+                                            figsize=fig_size, cpu_usage=act_jobs,foutname=None)
+        plt.suptitle('Periodic Usage: {}'.format(ky), size=16)
+        #
+        plt.savefig(fout_path_name)
 #
 def get_group_users(user_id):
     # # and get a list of users to construct an index:
