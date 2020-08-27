@@ -275,6 +275,10 @@ class SACCT_data_handler(object):
         self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
         self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
     #
+    def write_hdf5(self, h5out=None):
+        h5out = h5out or self.h5out
+        if h5out is None:
+            pass
     #
     #@numba.jit
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
@@ -1579,7 +1583,7 @@ class SACCT_groups_analyzer_report_handler(object):
 
     def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
                  out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', n_points_wkly_hrs=500,
-                 fig_width_tex='.8', qs=[.45, .5, .55], SACCT_obj=None, max_rws=None ):
+                 fig_width_tex='.8', qs=[.45, .5, .55], fig_size=(10,8), SACCT_obj=None, max_rws=None ):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
         #print('*** DEBUG: __init__: {}'.format(self.out_path))
@@ -1591,12 +1595,13 @@ class SACCT_groups_analyzer_report_handler(object):
                  Full_title=self.Full_title,
         foutname=os.path.join(out_path, tex_filename))
         #
-        
     #
-    def standard_reports_slides(self, ix=None, out_path=None, group_name='group', qs=None, fig_width_tex=None )
-        ```
+    def standard_reports_slides(self, ix=None, out_path=None, group_name='group', qs=None, fig_width_tex=None ):
+        '''
         # Standard set of slides for a sub-group, defined by the index ix
-        ```
+        '''
+        if not os.path.isdir(out_path):
+            os.makedirs(out_path)
         #
         # Standard frontmatter bits:
         if out_path is None:
@@ -1613,10 +1618,10 @@ class SACCT_groups_analyzer_report_handler(object):
         group_name_tex = group_name_tex.replace('\\_', '\_')
         #
         # make figures and add slides:
-        activity_figname = os.path.join(out_path, '{}_activity_ts.png'.format(group) )
-        periodic_figname = os.path.join(out_path, '{}_periodic_usage.png'.format(group) )
-        act_fig = self.activity_figure(ix=ix, fout_path_name=activity_figname)
-        per_fig = self.periodic_usage_figure(self, ix=None, fout_path_name=periodic_figname, qs=qs, fig_size=fig_size)
+        activity_figname = os.path.join(out_path, '{}_activity_ts.png'.format(group_name) )
+        periodic_figname = os.path.join(out_path, '{}_periodic_usage.png'.format(group_name) )
+        act_fig = self.activity_figure(ix=ix, fout_path_name=activity_figname, group_name=group_name)
+        per_fig = self.periodic_usage_figure(ix=ix, fout_path_name=periodic_figname, qs=qs, fig_size=fig_size)
         #
         self.HPC_tex_obj.add_fig_slide(fig_title='{}: CPU/Jobs Requests'.format(group_name_tex),
             width=fig_width_tex, fig_path=activity_figname)
@@ -1626,7 +1631,7 @@ class SACCT_groups_analyzer_report_handler(object):
         #
         
         
-    def activity_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, n_points_wkly_hrs=None, verbose=0):
+    def activity_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, n_points_wkly_hrs=None, group_name='group', verbose=0):
         # images then slides for just one group, which we define from an index.
         #
         # TODO:
@@ -1645,12 +1650,15 @@ class SACCT_groups_analyzer_report_handler(object):
             n_points_wkly_hrs = self.n_points_wkly_hrs
         #
         # compute figures:
-        wkly_hrs = SACCT_obj.get_cpu_hours(bin_size=7, n_points=n_points_wkly_hrs, IX=ix, verbose=0)
-        act_jobs = SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
+        wkly_hrs = self.SACCT_obj.get_cpu_hours(bin_size=7, n_points=n_points_wkly_hrs, IX=ix, verbose=0)
+        act_jobs = self.SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
         #
         if len(act_jobs)==0:
-            print('Group: {}:: no records.'.format(ky))
-            continue
+            print('Group: {}:: no records.'.format(group_name))
+            #print('Group: :: no records.' )
+            #continue
+            # TODO: return empty set?
+            return None
         #
         # active jobs/cpus and weekly cpu-hours:
         fg = plt.figure(figsize=fig_size)
@@ -1664,7 +1672,7 @@ class SACCT_groups_analyzer_report_handler(object):
         ax1a.plot(act_jobs['time'], act_jobs['N_cpu'], ls='--', lw=2., marker='', color='m',
                   label='CPUs', alpha=.5)
         #
-        fg.suptitle('Group: {}'.format(ky), size=16)
+        fg.suptitle('Group: {}'.format(group_name), size=16)
         ax1a.set_title('Active Jobs, CPUs')
         #
         ax2.plot(wkly_hrs['time'], wkly_hrs['cpu_hours']/7., ls='-', marker='.', label='bins=7 day', zorder=11)
@@ -1706,18 +1714,18 @@ class SACCT_groups_analyzer_report_handler(object):
         #
         # Save figure:
         plt.savefig(fout_path_name)
-#######
-    def periodic_usage_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None):
-        ```
+    #######
+    def periodic_usage_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, group_name='group'):
+        '''
         # periodic usage (aka, jobs per hour-of-day, etc.)
         #
-        ```
+        '''
         #
-        if fig_size = None:
+        if fig_size == None:
             fig_size=self.fig_size
         #
         if qs is None:
-            qs =
+            qs = self.qs
         #
         if fout_path_name is None:
             out_path = self.out_path
@@ -1725,9 +1733,16 @@ class SACCT_groups_analyzer_report_handler(object):
             fname = 'periodic_usage.png'
             fout_path_name = os.path.join(out_path, fname)
         #
-        zz = SACCT_obj.active_cpu_jobs_per_day_hour_report(qs=qs,
-                                            figsize=fig_size, cpu_usage=act_jobs,foutname=None)
-        plt.suptitle('Periodic Usage: {}'.format(ky), size=16)
+        # TODO: is there a beter way to handle the image. here, we use plt. to get the (implicit) current figure/axis object,
+        #  but this is kind of a dumb way to do this -- it would be better to have a defined figure or axis instance. return one? add a parameter
+        #  for suptitle(), and other stuff too? or just don't add suptitle() and pass a foutname().
+        #
+        #act_jobs = SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
+        zz = self.SACCT_obj.active_cpu_jobs_per_day_hour_report(qs=qs,
+                                            figsize=fig_size,
+                                            cpu_usage=self.SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0),
+                                            foutname=None)
+        plt.suptitle('Periodic Usage: {}'.format(group_name), size=16)
         #
         plt.savefig(fout_path_name)
 #
