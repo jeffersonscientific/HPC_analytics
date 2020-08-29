@@ -13,6 +13,7 @@ import pytz
 import multiprocessing as mpp
 import pickle
 import json
+import h5py
 #
 import subprocess
 import shlex
@@ -146,7 +147,7 @@ class SACCT_data_handler(object):
     #
     #
     def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
-                 n_points_usage=1000, verbose=0, keep_raw_data=False):
+                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None):
         '''
         # handler object for sacct data.
         #
@@ -194,9 +195,14 @@ class SACCT_data_handler(object):
         # especially for dev, allow to pass the recarray object itself...
         if isinstance(data_file_name, str):
             self.data = self.load_sacct_data()
+            if h5out_file is None:
+                h5out_file = '{}.h5'.format(os.path.splitext(data_file_name)[0])
         else:
             self.data = data_file_name
             #self.data = self.data_df.values.to_list()
+        if h5out_file is None:
+            h5out_file='sacct_output.h5'
+        self.h5out_file = h5out_file
         #
         self.headers = self.data.dtype.names
         # row-headers index:
@@ -275,10 +281,22 @@ class SACCT_data_handler(object):
         self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
         self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
     #
-    def write_hdf5(self, h5out=None):
-        h5out = h5out or self.h5out
-        if h5out is None:
-            pass
+    def write_hdf5(self, h5out_file=None):
+        h5out_file = h5out_file or self.h5out_file
+        if h5out_file is None:
+            h5out_file = 'sacct_writehdf5_output.h5'
+        #
+        with h5py.File(h5out_file, 'a') as fout:
+            #fout.create_group('')
+            # do we need any groups?
+            # raw data?
+            #fout.create_data_set('data_raw', data=self.data)
+            fout.create_dataset('jobs_summary', data=self.jobs_summary)
+            fout.create_dataset('cpu_usage', data=self.cpu_usage)
+            fout.create_dataset('weekly_hours', data=self.weekly_hours)
+            fout.create_dataset('daily_hours', data=self.daily_hours)
+            #
+        #
     #
     #@numba.jit
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
@@ -1268,7 +1286,7 @@ class Tex_Slides(object):
               email='mryoder@stanford.edu', foutname='output/HPC_analytics/HPC_analytics.tex',
               project_tex=None ):
         #
-        # TODO: test saving/reloading presentation_tex. A lso, save inputs, so we can completely reload
+        # TODO: test saving/reloading presentation_tex. Also, save inputs, so we can completely reload
         #  an object? Something like Tex_Slides_Obj.json: {project_tex:{}, input_prams:{}}
         #
         # TODO: accept project.json input. this will require handling automated initialization bits, like
@@ -1600,15 +1618,28 @@ class SACCT_groups_analyzer_report_handler(object):
         '''
         # Standard set of slides for a sub-group, defined by the index ix
         '''
-        if not os.path.isdir(out_path):
-            os.makedirs(out_path)
         #
         # Standard frontmatter bits:
+        # NOTE: except for diagnostic purposes, this should probably usually be None and default to the parent object.
+        #  otherwise, it becomes difficult to stitch together the .tex object. Namely, it becomes necessary to use either
+        #  absolute paths for figure refrences, which are not portable, or really complex navigation of relative paths --
+        #  which maybe Python can do for us? we'd maybe have a figure path like ../../p1/p2/figname.png.
+        #
         if out_path is None:
-            out_path = self.out_path
+            out_path =self.out_path
+            #out_path = os.path.join(self.out_path, 'figs')
+        out_path_figs = os.path.join(out_path, 'figs')
+        
+        if not os.path.isdir(out_path_figs):
+            os.makedirs(out_path_figs)
+        #
+        # this is mostly to remind us that this part is still messy. this is the figs path to write into the tex file.
+        # for this to be rigorous, we must either 1) not allow an out_path input, 2) use an absolut path, or 3) do a difficult navigation
+        #  of the relative path, all of which are messy or limit debugging options, etc. so we'll maybe let this break sometimes...
+        out_path_figs_tex = 'figs'
+        #
         qs = qs or self.qs
         fig_width_tex = (fig_width_tex or self.fig_width_tex)
-        #
         fig_size=self.fig_size
         #
         ###################################
@@ -1618,19 +1649,31 @@ class SACCT_groups_analyzer_report_handler(object):
         group_name_tex = group_name_tex.replace('\\_', '\_')
         #
         # make figures and add slides:
-        activity_figname = os.path.join(out_path, '{}_activity_ts.png'.format(group_name) )
-        periodic_figname = os.path.join(out_path, '{}_periodic_usage.png'.format(group_name) )
-        act_fig = self.activity_figure(ix=ix, fout_path_name=activity_figname, group_name=group_name)
-        per_fig = self.periodic_usage_figure(ix=ix, fout_path_name=periodic_figname, qs=qs, fig_size=fig_size)
+        activity_figname       = '{}_activity_ts.png'.format(group_name)
+        periodic_figname_rect  = '{}_periodic_usage_rect.png'.format(group_name)
+        periodic_figname_polar = '{}_periodic_usage_polar.png'.format(group_name)
+        #
+        activity_figpath = os.path.join(out_path_figs, activity_figname )
+        periodic_figpath_rect = os.path.join(out_path_figs, periodic_figname_rect )
+        periodic_figpath_polar = os.path.join(out_path_figs, periodic_figname_polar )
+        #
+        act_fig = self.activity_figure(ix=ix, fout_path_name=activity_figpath, group_name=group_name)
+        per_fig = self.periodic_usage_figure(ix=ix, fout_path_name=periodic_figpath_rect, qs=qs, fig_size=fig_size,
+                group_name=group_name)
+        per_fig_polar = self.periodic_usage_figure(ix=ix, fout_path_name=periodic_figpath_polar, qs=qs, fig_size=fig_size,
+                group_name=group_name, projection='polar' )
         #
         self.HPC_tex_obj.add_fig_slide(fig_title='{}: CPU/Jobs Requests'.format(group_name_tex),
-            width=fig_width_tex, fig_path=activity_figname)
+            width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, activity_figname) )
         #
         self.HPC_tex_obj.add_fig_slide(fig_title='{}: Periodic usage'.format(group_name_tex),
-            width=fig_width_tex, fig_path=periodic_figname)
+            width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, periodic_figname_rect))
         #
-        
-        
+        self.HPC_tex_obj.add_fig_slide(fig_title='{}: Periodic Clock-Plots'.format(group_name_tex),
+            width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, periodic_figname_polar))
+        #
+    #
+    #
     def activity_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, n_points_wkly_hrs=None, group_name='group', verbose=0):
         # images then slides for just one group, which we define from an index.
         #
@@ -1690,6 +1733,12 @@ class SACCT_groups_analyzer_report_handler(object):
         # set ax3 labels to dates:
         # now format the datestrings...
         for ax in (ax1,):
+            #print('*** xticklabels(): {}'.format([s.get_text() for s in ax.get_xticklabels() ] ) )
+            #print('*** xcticks(): {}'.format( ax.get_xticks() ) )
+            #print('*** lbls_prim: {}'.format([simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]) )
+            #print('*** act_jobs[time]: {}'.format(act_jobs['time']))
+            #
+            #break
             # TODO: FIXME: so... this grossly malfunctions for fs-scarp1. it picks up the second positional argument as text, instead of the first. aka:
 #                ticklabels:  [Text(737445.5269299999, 0, '0.000030'), Text(737445.526935, 0, '0.000035'), Text(737445.5269399999, 0, '0.000040'), Text(737445.5269449999, 0, '0.000045'), Text(737445.52695, 0, '0.000050'), Text(737445.5269549999, 0, '0.000055'), Text(737445.5269599999, 0, '0.000060')]
 #                ticklabels:  ['0.000030', '0.000035', '0.000040', '0.000045', '0.000050', '0.000055', '0.000060']
@@ -1702,12 +1751,12 @@ class SACCT_groups_analyzer_report_handler(object):
             #
             # just trap this so that it works. could throw a warning...
             try:
-                lbls = [simple_date_string(mpd.num2date( float(s.get_text())) ) for s in ax.get_xticklabels()]
+                lbls = [simple_date_string(mpd.num2date( float(s) ) ) for s in ax.get_xticks()]
             except:
                 print('** WARNING: failed writing date text labels:: {}'.format('lbls = "[simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]" '))
                 print('"*** SysInfo: {}'.format(sys.exc_info()[0]))
                 print('*** trying to write x-ticks with failsafe mmpd.num2date(max(1, float(s.get_text())) )')
-                lbls = [simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]
+                lbls = [simple_date_string(mpd.num2date( float(s) ) ) for s in ax.get_xticks()]
             #
             ax.set_xticklabels(lbls)
         #
@@ -1715,7 +1764,9 @@ class SACCT_groups_analyzer_report_handler(object):
         # Save figure:
         plt.savefig(fout_path_name)
     #######
-    def periodic_usage_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, group_name='group'):
+    #
+    def periodic_usage_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None,
+            group_name='group', projection=None):
         '''
         # periodic usage (aka, jobs per hour-of-day, etc.)
         #
@@ -1741,7 +1792,7 @@ class SACCT_groups_analyzer_report_handler(object):
         zz = self.SACCT_obj.active_cpu_jobs_per_day_hour_report(qs=qs,
                                             figsize=fig_size,
                                             cpu_usage=self.SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0),
-                                            foutname=None)
+                                            foutname=None, periodic_projection=projection)
         plt.suptitle('Periodic Usage: {}'.format(group_name), size=16)
         #
         plt.savefig(fout_path_name)
