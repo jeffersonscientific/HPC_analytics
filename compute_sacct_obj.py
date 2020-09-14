@@ -23,7 +23,8 @@ import subprocess
 import hpc_lib
 
 #
-data_file_name = 'data/sacct_owners_out_3500489.out'
+data_file_name = 'data/sacct_serc_20200724.out'
+#data_file_name = 'data/sacct_owners_out_3500489.out'
 #data_file_name = 'data/sacct_mazama_0623_tool8.out'
 #data_file_name = '/scratch/myoder96/HPC_analytics/data/sacct_serc_20200622.out'
 #
@@ -36,7 +37,12 @@ data_fname_root, data_fname_ext = os.path.splitext(data_file_name)
 pkl_name = "{}.pkl".format(os.path.splitext(data_file_name)[0])
 tex_fname = '{}.tex'.format(data_fname_root)
 #
-n_cpu=8
+n_cpu=4
+#if [[ -z ${SLURM_NTASKS} ]]; then
+#	n_cpu=8
+#else
+#	n_cpu=${SLURM_NTASKS}
+#fi
 #
 # temporarily, comment these out so we can just run the report:
 #sacct_mazama = hpc_lib.SACCT_data_handler(data_file_name=data_file_name)
