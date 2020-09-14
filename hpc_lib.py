@@ -13,6 +13,7 @@ import pytz
 import multiprocessing as mpp
 import pickle
 import json
+import h5py
 #
 import subprocess
 import shlex
@@ -24,6 +25,8 @@ import pandas
 # matplotlib.use('Agg')
 #. load this first, so on an HPC primary 
 import pylab as plt
+#
+day_2_sec=24.*3600.
 #
 # TODO: move group_ids, and local-specific things like that to site-specific  modules or data files.
 #
@@ -54,68 +57,74 @@ def str2date_num(dt_str, verbose=0):
 def simple_date_string(dtm, delim='-'):
     return delim.join([str(x) for x in [dtm.year, dtm.month, dtm.day]])
 #
+#@numba.jit
 def elapsed_time_2_day(tm_in, verbose=0):
     #
-    # TODO: really??? why not just post the PL value?
-    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ):
-        return None
-    #
-    tm_ins = tm_in.split('-')
-    #
-    if len(tm_ins)==0:
-        return 0.
-    if len(tm_ins)==1:
-        days=0
-        tm=tm_ins[0]
-    if len(tm_ins)>1:
-        days = tm_ins[0]
-        tm = tm_ins[1]
-    #
-    #
-    if verbose:
-        try:
-            h,m,s = tm.split(':')
-        except:
-            print('*** AHHH!!! error! tm_in: {}, tm_ins: {}, tm: {}'.format(tm_in, tm_ins, tm) )
-            raise Exception("broke on elapsed time.")
-    else:
-        h,m,s = tm.split(':')
-        
-    #
-    #return (float(days)*24.*3600. + float(h)*3600. + float(m)*60. + float(s))/(3600.*24)
-    return float(days) + float(h)/24. + float(m)/(60.*24.) + float(s)/(3600.*24.) 
-                       
-def elapsed_time_2_sec(tm_in, verbose=0):
-    #
-    # TODO: really??? why not just post the PL value?
-    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ):
+    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
     #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
         return None
     #
-    # guessing for now...
-    tm_ins = tm_in.split('-')
+    return elapsed_time_2_sec(tm_in=tm_in, verbose=verbose)/(day_2_sec)
+#
+#@numba.jit
+def elapsed_time_2_sec(tm_in, verbose=0):
     #
-    if len(tm_ins)==0:
-        return 0.
-    if len(tm_ins)==1:
-        days=0
-        tm=tm_ins[0]
-    if len(tm_ins)>1:
-        days = tm_ins[0]
-        tm = tm_ins[1]
+    # TODO: really??? why not just post the PL value?
+    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
+    #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
+        return None
     #
-    
+    days, tm = ([0,0] + list(tm_in.split('-')))[-2:]
+    #
+    if tm==0:
+        return 0
+    days=float(days)
+    #
     if verbose:
         try:
-            h,m,s = tm.split(':')
+            h,m,s = numpy.append(numpy.zeros(3), numpy.array(tm.split(':')).astype(float))[-3:]
         except:
             print('*** AHHH!!! error! ', tm, tm_in)
             raise Exception("broke on elapsed time.")
     else:
-        h,m,s = tm.split(':')
+        h,m,s = numpy.append(numpy.zeros(3), numpy.array(tm.split(':')).astype(float))[-3:]
         
     #
-    return float(days)*24.*3600. + float(h)*3600. + float(m)*60. + float(s)
+    return numpy.dot([day_2_sec, 3600., 60., 1.], [float(x) for x in (days, h, m, s)])
+    #return float(days)*day_2_sec + float(h)*3600. + float(m)*60. + float(s)
+#
+# TO_DO: can we vectorize? might have to expand/split() first, then to the math parts.
+def elapsed_time_2_sec_v(tm_in, verbose=0):
+    #
+    tm_in = numpy.atleast_1d(tm_in)
+    #
+    tm_in = nm_in[numpy.logical_or(tm_in=='Partition_Limit', tm_in=='UNLIMITED')]
+    # TODO: really??? why not just post the PL value?
+    #if tm_in in ( 'Partition_Limit', 'UNLIMITED' ):
+    #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
+    #    return None
+    #
+    days, tm = ([0,0] + list(tm_in.split('-')))[-2:]
+    #
+    if tm==0:
+        return 0
+    days=float(days)
+    #
+    if verbose:
+        try:
+            h,m,s = numpy.append(numpy.zeros(3), numpy.array(tm.split(':')).astype(float))[-3:]
+        except:
+            print('*** AHHH!!! error! ', tm, tm_in)
+            raise Exception("broke on elapsed time.")
+    else:
+        h,m,s = numpy.append(numpy.zeros(3), numpy.array(tm.split(':')).astype(float))[-3:]
+        
+    #
+    return numpy.dot([day_2_sec, 3600., 60., 1.], [float(x) for x in (days, h, m, s)])
+    #return float(days)*day_2_sec + float(h)*3600. + float(m)*60. + float(s)
+#
+
+
 #
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
@@ -129,15 +138,23 @@ class SACCT_data_handler(object):
                 'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
                         'Eligible':dtm_handler_default,
                     'Elapsed':elapsed_time_2_day, 'MaxRSS':str,
-            'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':str, 'UserCPU':str,
-            'TotalCPU':str}
+            'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 
+                        'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day}
     #
     time_units_labels={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes','minute':'minutes', 'minutes':'minutes', 'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
     #    
     time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
     #
     #
-    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None, verbose=0):
+    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
+                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None):
+        '''
+        # handler object for sacct data.
+        #
+        #@keep_raw_data: we compute a jobs_summary[] table, which probably needs to be an HDF5 object, as per memory
+        #  requirements, But for starters, let's optinally dump the raw data. we shouldn't actually need it for
+        #  anything we're doing right now. if it comes to it, maybe we dump it as an HDF5 or actually build a DB of some sort.
+        '''
         #
         if types_dict is None:
             #
@@ -178,9 +195,14 @@ class SACCT_data_handler(object):
         # especially for dev, allow to pass the recarray object itself...
         if isinstance(data_file_name, str):
             self.data = self.load_sacct_data()
+            if h5out_file is None:
+                h5out_file = '{}.h5'.format(os.path.splitext(data_file_name)[0])
         else:
             self.data = data_file_name
             #self.data = self.data_df.values.to_list()
+        if h5out_file is None:
+            h5out_file='sacct_output.h5'
+        self.h5out_file = h5out_file
         #
         self.headers = self.data.dtype.names
         # row-headers index:
@@ -246,15 +268,35 @@ class SACCT_data_handler(object):
         #. Elapsed time. Start -> min(Start[]), End -> max(End[]), NCPU -> (NCPU of parent job or 
         #. max(NCPU)). For performance, we'll do well to not have to do logical, string-like operations --
         #  aka, do algebraic type operations.
-        #
-        # let's compute this by default...
+        if not keep_raw_data:
+            del data
         #
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
-        # TODO: parallelize this...
-        self.cpu_usage = self.active_jobs_cpu()
+        # TODO: (re-)parallelize this...?? running continuously into problems with pickled objects being too big, so
+        #   we need to be smarter about how we parallelize. Also, parallelization is just costing a lot of memory (like 15 GB/CPU -- which
+        #   seems too much, so could be a mistake, but probalby not, since I'm pretty sure I ran a smilar job in SPP on <8GB).
+        self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
+        self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
+        self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
     #
+    def write_hdf5(self, h5out_file=None):
+        h5out_file = h5out_file or self.h5out_file
+        if h5out_file is None:
+            h5out_file = 'sacct_writehdf5_output.h5'
+        #
+        with h5py.File(h5out_file, 'a') as fout:
+            #fout.create_group('')
+            # do we need any groups?
+            # raw data?
+            #fout.create_data_set('data_raw', data=self.data)
+            fout.create_dataset('jobs_summary', data=self.jobs_summary)
+            fout.create_dataset('cpu_usage', data=self.cpu_usage)
+            fout.create_dataset('weekly_hours', data=self.weekly_hours)
+            fout.create_dataset('daily_hours', data=self.daily_hours)
+            #
+        #
     #
     #@numba.jit
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
@@ -276,6 +318,7 @@ class SACCT_data_handler(object):
                 print('*** headers_rw: ', headers_rw)
             #headers = headers_rw[:-1].split(delim)[:-1]
             headers = headers_rw[:-1].split(delim)[:-1] + ['JobID_parent']
+            self.headers = headers
             #
             # make a row-handler dictionary, until we have proper indices.
             RH = {h:k for k,h in enumerate(headers)}
@@ -300,11 +343,15 @@ class SACCT_data_handler(object):
             if n_cpu > 1:
                 # TODO: use a context manager syntax instead of open(), close(), etc.
                 P = mpp.Pool(n_cpu)
-                self.headers = headers
+                #self.headers = headers
                 #
                 # TODO: how do we make this work with max_rows limit?
                 # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
                 # for the use of P.map(), using a context manager and functools.partial()
+                # TODO: use an out-of-class variation of process_row(), or modify the in-class so MPP does not need
+                #   to pickle over the whole object, which breaks for large data sets. tentatively, use apply_async() and just pass
+                #   headers, types_dict, and RH.
+                #   def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={})
                 results = P.map_async(self.process_row, fin, chunksize=chunk_size)
                 P.close()
                 P.join()
@@ -360,6 +407,8 @@ class SACCT_data_handler(object):
     @numba.jit
     def process_row(self, rw):
         # use this with MPP processing:
+        # ... but TODO: it looks like this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
+        #  class object... so we need to move the MPP object out of class.
         #
         # use this for MPP processing:
         rws = rw.split(self.delim)
@@ -371,7 +420,7 @@ class SACCT_data_handler(object):
 #    @numba.jit
 #    def get_cpu_hours_2(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
 #        '''
-#        # NOTE: it might still be better to transpose the looping, but doint it this was makes computing weekly, daily, etc.
+#        # NOTE: it might still be better to transpose the looping, but doing it this was makes computing weekly, daily, etc.
 #        #  bin sizes a little more complicated, so let's just skip it for now (but keep this code in place, 'lest we want to
 #        #  repurpose it later.
 #        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
@@ -566,7 +615,8 @@ class SACCT_data_handler(object):
     #
     #
     #@numba.jit
-    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
+                     n_cpu=None):
         '''
         # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
         #  intermediat/transient arrays.
@@ -576,6 +626,10 @@ class SACCT_data_handler(object):
         # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
         #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
         '''
+        #
+        # stash a copy of input prams:
+        inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
+        n_cpu = (n_cpu or self.n_cpu)
         #
         # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something)
         #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
@@ -596,21 +650,22 @@ class SACCT_data_handler(object):
             jobs_summary = jobs_summary[IX]
         #
         t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+        #print('*** shape(t_now): ', numpy.shape(t_now))
         if verbose:
             print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
         #
-        if len(jobs_summary)==0:
-            return numpy.array([], dtype=[('time', '>f8'),
+        cpuh_dtype = [('time', '>f8'),
             ('t_start', '>f8'),
             ('cpu_hours', '>f8'),
-            ('N_jobs', '>f8')])
+            ('N_jobs', '>f8')]
+        #
+        if len(jobs_summary)==0:
+            return numpy.array([], dtype=cpuh_dtype)
         #
         # NOTE: See above discussion RE: [None] index and array column rank.
         t_start = jobs_summary['Start']
-        #t_start = jobs_summary['Start'][0]
-        #
         t_end = jobs_summary['End'].copy()
-        #t_end = jobs_summary['End'][0]
+        #
         if verbose:
             print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
         #
@@ -620,16 +675,70 @@ class SACCT_data_handler(object):
         if verbose:
             print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
         #
-        #
         if t_min is None:
             t_min = numpy.nanmin([t_start, t_end])
-        t_max = numpy.nanmax([t_start, t_end])
+        #
+        if t_max is None:
+            t_max = numpy.nanmax([t_start, t_end])
+        #
+        # recursive MPP handler:
+        #  this one is a little bit complicated by the use of linspace(a,b,n), sice linspae is inclusive for both a,b
+        #  so we have to do a trick to avoid douple-calculationg (copying) the intersections (b_k-1 = a_k)
+        if n_cpu>1:
+            #
+            # TODO: do this with a linspace().astype(int)
+            time_axis = numpy.linspace(t_min, t_max, n_points)
+            dk = min(int(numpy.ceil(n_points/n_cpu)),1000)
+            k_ps = numpy.arange(0, n_points, dk)
+            if not k_ps[-1]==n_points:
+                k_ps = numpy.append(k_ps, [n_points])
+            if verbose:
+                print('*** k_ps: ', k_ps)
+            #
+            
+            #
+            #t_intervals = numpy.linspace(t_min, t_max, n_cpu+1)
+            #dt = (t_max - t_min)/n_points
+            #
+            with mpp.Pool(n_cpu) as P:
+                R = []
+                #for k_p, (t1, t2) in enumerate(zip(t_intervals[0:-1], t_intervals[1:])):
+                for k1, k2 in zip(k_ps[0:-1], k_ps[1:]):
+                    t1 = time_axis[k1]
+                    t2 = time_axis[k2-1]
+                    
+                    my_inputs = inputs.copy()
+                    # TODO: need to clean up integer mismatches on n_points. I think the best thing to do is to just
+                    # instantiate a full X sequence and parse it for x_min, x_max, len(x). For now, this should run.                    
+                    #my_inputs.update({'t_min':t1, 't_max':t2 - dt*(k_p<float(n_cpu-1)), 'n_cpu':1, 
+                    my_inputs.update({'t_min':t1, 't_max':t2, 'n_cpu':1,'n_points':int(k2-k1)})
+                    if verbose:
+                        print('*** my_inputs: ', my_inputs)
+                    #
+                    R += [P.apply_async(self.get_cpu_hours, kwds=my_inputs.copy())]
+                    #
+                    res = [r.get() for r in R]
+                # join()? not clear on this with a context manager..
+                #P.join()
+                #
+                # create a structured array for the whole set:
+                CPU_H_mpp = numpy.zeros( (0, ), dtype=cpuh_dtype)
+                k0=0
+                for k,r in enumerate(res):
+                    #print('*** receiving r:: ', numpy.shape(r))
+                    #CPU_H_mpp[k0:k0+len(r)][:] = r[:]
+                    CPU_H_mpp = numpy.append(CPU_H_mpp, r)
+                    k0+=len(r)
+                #
+                return CPU_H_mpp
         #
         #
-        CPU_H = numpy.zeros( (n_points, ), dtype=[('time', '>f8'),
-                                                    ('t_start', '>f8'),
-                                                    ('cpu_hours', '>f8'),
-                                                    ('N_jobs', '>f8')])
+        CPU_H = numpy.zeros( (n_points, ), dtype=cpuh_dtype)
+        
+        #print('*** DEBUG: shapes:: ', numpy.shape(t_now), numpy.shape(t_min), numpy.shape(t_max), numpy.shape(n_points), 
+        #      numpy.shape(t_start), numpy.shape(t_end),
+        #      numpy.shape(numpy.linspace(t_min, t_max, n_points)))
+        #
         CPU_H['time'] = numpy.linspace(t_min, t_max, n_points)
         CPU_H['t_start'] = CPU_H['time']-bin_size
         #
@@ -655,10 +764,11 @@ class SACCT_data_handler(object):
                 numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] ), N_ix
         #
         #CPU_H['cpu_hours']*=24.
+        #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
         return CPU_H
     #
     #@numba.jit
-    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None):
+    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
         '''
         # @n_points: number of points in returned time series.
         # @bin_size: size of bins. This will override n_points
@@ -675,6 +785,7 @@ class SACCT_data_handler(object):
         if verbose is None:
             verbose = self.verbose
         #
+        mpp_chunksize = mpp_chunksize or self.chunk_size
         n_cpu = n_cpu or self.n_cpu
         #
         if (not ix is None) and len(ix)==0:
@@ -686,10 +797,6 @@ class SACCT_data_handler(object):
             jobs_summary=self.jobs_summary
         if not ix is None:
             jobs_summary=jobs_summary[ix]
-#        if ix is None:
-#            jobs_summary=self.jobs_summary
-#        else:
-#            jobs_summary = self.jobs_summary[ix]
         #
         if t_now is None:
             t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
@@ -778,49 +885,54 @@ class SACCT_data_handler(object):
                     print('*** PROGRESS: {}/{}'.format(j,len(output)))
                     print('*** ', output[j-10:j])
             #return output
-        else:
+        else:   
             with mpp.Pool(n_cpu) as P:
                 # (star)map() method:
-                self.t_start = t_start
-                self.t_end=t_end
-                self.ajc_js=jobs_summary
+                
                 #
-                results = P.map_async(self.process_ajc_row, output['time'] )
+                #print('*** executing in MPP mode...')
+                # NOTE: large data sets break this if t_start, t_end inputs become very very large, which exceeds
+                #. the pickling capacity, so for MPP we need to break up t_start, t_end. map_async() probably knows
+                #  how to do this properly, or we can use apply_async and write a simple algorithm to limit the number
+                #  of t_start, t_end records pased. we might even just do a loop-lop with @jit compilation... but first,
+                #  let's try a map...
+                # need to break this into small enough chunks to not break the pickle() indexing.
+                n_procs = min(numpy.ceil(len(t_start)/n_cpu).astype(int), numpy.ceil(len(t_start)/mpp_chunksize).astype(int) )
+                ks_r = numpy.linspace(0, len(t_start), n_procs+1).astype(int)
+                #print('*** DEBUG: KS_R: ', ks_r)
                 #
-                ##r_njobs, r_ncpu = numpy.array(results.get()).T
-                #R = numpy.array(results.get(()))
-                #output['N_jobs'] = R[:,0]
-                #output['N_cpu']  = R[:,1]
+                #ks_r = numpy.linspace(t_min, t_max, n_cpu).astype(int)
+                results = [P.apply_async(self.process_ajc_row_2,  kwds={'t':output['time'], 't_start':t_start[k1:k2],
+                            't_end':t_end[k1:k2], 'NCPUs':jobs_summary['NCPUS'][k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
                 #
-                output['N_jobs'], output['N_cpu'] = numpy.array(results.get()).T
+                R = [r.get() for r in results]
+                # join the pool? this throws a "pool still running" error... ???
+                #P.join()
                 #
-                del results
-                #
-#                # recursive and apply_async() method:
-#                # this appears to work but uses quite a bit of memory. Can we improve by using Pool()
-#                # self call signature
-#                # active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=1, jobs_summary=None, verbose=0)
-#                dk=int(numpy.ceil(len(jobs_summary)/n_cpu))
-#
-#                res = [P.apply_async(self.active_jobs_cpu, kwds={"n_points":n_points, "ix":None, "bin_size":bin_size,
-#                     "t_min":t_min, "t_max":t_max, "t_now":t_now, "n_cpu":1, "jobs_summary":jobs_summary[dk*k:dk*(k+1)],
-#                      "verbose":verbose}) for k in range(n_cpu) ]
-#                #
-#                # one or more part of this syntax is not right... or maybe just not supported. Break it out:
-#                for r in res:
-#                    # I wish there was a better way to do this, but I'm coming up short... we can be a little more memory friendly
-#                    #  (maybe?) by dumping the redundant X component.
-#                    out_r = r.get()[['N_jobs', 'N_cpu']]
-#                    #
-#                    #output[['N_jobs', 'N_cpu']][:] += r.get()[['N_jobs', 'N_cpu']][:]
-#                    output['N_jobs'] += out_r['N_jobs']
-#                    output['N_cpu']  += out_r['N_cpu']
-#                    del out_r
-#                #
+            #print('** Shape(R): ', numpy.shape(results))
+            # TODO: how do we numpy.sum(R) on the proper axis?
+            for k_r, (r_nj, r_ncpu) in enumerate(R):
+                #print('**** [{}]: {} ** {}'.format(k_r, r_nj[0:10], r_ncpu[0:10]))
+                output['N_jobs'] += numpy.array(r_nj)
+                output['N_cpu']  += numpy.array(r_ncpu)
+            #
+            del P, R, results
             #
         return output
 
     #
+    def process_ajc_row_2(self, t, t_start, t_end, NCPUs):
+        
+        #print('*** DEBUG: {} ** {}'.format(len(t_start), len(t_end)))
+        ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
+        #
+        #N=numpy.sum(ix_t, axis=1)
+        #C=numpy.sum(NCPUs.reshape(1,-1), axis=1)
+        #
+        # TODO: there is a proper syntax for the NCPUs calc...
+        #r_val = numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
+        #print('*** return from[{}], sh={} ** {}'.format(os.getpid(), r_val.shape, r_val[0][0:10]))
+        return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
     @numba.jit
     #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
     def process_ajc_row(self, t):
@@ -973,9 +1085,9 @@ class SACCT_data_handler(object):
         #                                     + [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
         
     #
-    def get_submit_wait_timeofday(self, time_units='hours', qs=[.5, .75, .95]):
+    def get_submit_wait_timeofday(self, time_units='hours', qs=numpy.array([.5, .75, .95])):
         '''
-        # wait times as a functino fo time-of-day. Compute various quantiles for these values.
+        # wait times as a function fo time-of-day. Compute various quantiles for these values.
         # @time_units: {hours, days, and somme others}. References class scope time_units_labels consolidation dict and
         #.   self.time_units_vals{} to get the values for those. Base units are days, so ('hour', 'hours' 'hr') -> 24 (hrs/day)
         # @qs=[]: quantiles. default, [.5, .75, .95] give s the .5, .75, .95 quantiles.
@@ -998,6 +1110,8 @@ class SACCT_data_handler(object):
         Y = (self.jobs_summary['Start']- self.jobs_summary['Submit'] )*u_time
         #
         # TODO: we were sorting for a reason, but do we still need to?
+        #  NOTE: also, we're sorting on the modulo sequence, so it's highly ambigous. My guess is we can just get rid of this,\
+        # but it's worth testing first.
         ix = numpy.argsort(X)
         X = X[ix].astype(int)    # NOTE: at some point, we might actually want the non-int X values...
         Y = Y[ix]
@@ -1172,7 +1286,7 @@ class Tex_Slides(object):
               email='mryoder@stanford.edu', foutname='output/HPC_analytics/HPC_analytics.tex',
               project_tex=None ):
         #
-        # TODO: test saving/reloading presentation_tex. A lso, save inputs, so we can completely reload
+        # TODO: test saving/reloading presentation_tex. Also, save inputs, so we can completely reload
         #  an object? Something like Tex_Slides_Obj.json: {project_tex:{}, input_prams:{}}
         #
         # TODO: accept project.json input. this will require handling automated initialization bits, like
@@ -1300,7 +1414,7 @@ class SACCT_groups_analyzer_report(object):
 
     def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
                  out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', groups=None,
-                 add_all_groups=True,
+                 add_all_groups=True, n_points_wkly_hrs=500, fig_size=(10,8),
                  fig_width='.8', qs=[.45, .5, .55], SACCT_obj=None, max_rws=None, group_exclusions=group_exclusions ):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
@@ -1311,8 +1425,8 @@ class SACCT_groups_analyzer_report(object):
         #
         self.make_report()
         
-    
-    def make_report(self, out_path=None, tex_filename=None, qs=None, max_rws=None, fig_width=None, verbose=1):
+    def make_report(self, out_path=None, tex_filename=None, qs=None, max_rws=None, fig_width=None, n_points_wkly_hrs=None,
+    fig_size=(10,8), verbose=1):
 
         # make some slides, including all the breakdown.
         # TODO: wrap this up into a class or function in HPC_lib.
@@ -1324,10 +1438,14 @@ class SACCT_groups_analyzer_report(object):
             out_path = self.out_path
         if tex_filename is None:
             tex_filename = self.tex_filename
+        if n_points_wkly_hrs is None:
+            n_points_wkly_hrs = self.n_points_wkly_hrs
         groups = self.groups
         if max_rws is None:
             max_rws = self.max_rws
         fig_width = str(fig_width or self.fig_width)
+        if fig_size is None:
+            fig_size=tuple((12,9))
         #
         SACCT_obj = self.SACCT_obj
         #
@@ -1345,14 +1463,14 @@ class SACCT_groups_analyzer_report(object):
                 groups = json.load(fin)
         #
         # add an "all" group, with all names from groups. This is an expensive way to "All", since
-        #. it wil build and search an index, butwe will benefit from simplicity.
+        #. it wil build and search an index, butwe will benS from simplicity.
         #
         if self.add_all_groups:
             #and not "all" in [s.lower() for s in groups.keys()]:
             groups['All'] = list(set([s for rw in groups.values() for s in rw]))
 
         print('keys: ', groups.keys() )
-        fig_size=tuple((12,9))
+        #
         for k, (ky,usrs) in enumerate(groups.items()):
             #
             # DEBUG:
@@ -1365,7 +1483,7 @@ class SACCT_groups_analyzer_report(object):
             #
             # tex corrected group name:
             grp_tex = ky.replace('_', '\_')
-            gpr_tex = ky.replace('\\_', '\_')
+            grp_tex = grp_tex.replace('\\_', '\_')
             #
             ix = numpy.where([s in usrs for s in SACCT_obj.jobs_summary['User'] ])
             #
@@ -1378,7 +1496,7 @@ class SACCT_groups_analyzer_report(object):
                 print('[{}]:: no records.'.format(ky))
                 continue
             #
-            wkly_hrs = SACCT_obj.get_cpu_hours(bin_size=7, n_points=500, IX=ix, verbose=0)
+            wkly_hrs = SACCT_obj.get_cpu_hours(bin_size=7, n_points=n_points_wkly_hrs, IX=ix, verbose=0)
             act_jobs = SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
             #
             # DEBUG:
@@ -1388,6 +1506,7 @@ class SACCT_groups_analyzer_report(object):
                 print('Group: {}:: no records.'.format(ky))
                 continue
             #
+            # active jobs/cpus and weekly cpu-hours:
             fg = plt.figure(figsize=fig_size)
             ax1 = plt.subplot('211')
             ax1.grid()
@@ -1398,7 +1517,9 @@ class SACCT_groups_analyzer_report(object):
             ax1.plot(act_jobs['time'], act_jobs['N_jobs'], ls='-', lw=2., marker='', label='Jobs', alpha=.5 )
             ax1a.plot(act_jobs['time'], act_jobs['N_cpu'], ls='--', lw=2., marker='', color='m',
                       label='CPUs', alpha=.5)
-            ax1a.set_title('Group: {}'.format(ky))
+            #ax1a.set_title('Group: {}'.format(ky))
+            fg.suptitle('Groaup: {}'.format(ky), size=16)
+            ax1a.set_title('Active Jobs, CPUs')
             #
             ax2.plot(wkly_hrs['time'], wkly_hrs['cpu_hours']/7., ls='-', marker='.', label='bins=7 day', zorder=11)
             #
@@ -1451,7 +1572,7 @@ class SACCT_groups_analyzer_report(object):
             #jobs_per_path=os.path.join(output_path, jobs_per_name)
             #
             zz = SACCT_obj.active_cpu_jobs_per_day_hour_report(qs=qs,
-                                                figsize=fig_size, cpu_usage=act_jobs,foutname=None)
+                                                figsize=fig_size, cpu_usage=act_jobs,foutname=None, periodic_projection='polar')
             plt.suptitle('Instantaneous Usage: {}'.format(ky), size=16)
             #
             #
@@ -1476,7 +1597,205 @@ class SACCT_groups_analyzer_report(object):
         #
     #
 #
-#######
+class SACCT_groups_analyzer_report_handler(object):
+
+    def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
+                 out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', n_points_wkly_hrs=500,
+                 fig_width_tex='.8', qs=[.45, .5, .55], fig_size=(10,8), SACCT_obj=None, max_rws=None ):
+        #
+        self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
+        #print('*** DEBUG: __init__: {}'.format(self.out_path))
+        #
+        #if self.groups is None:
+        #    self.groups={'All':list(set(SACCT_obj.jobs_summary['User']))}
+        #
+        self.HPC_tex_obj = Tex_Slides(Short_title=self.Short_title,
+                 Full_title=self.Full_title,
+        foutname=os.path.join(out_path, tex_filename))
+        #
+    #
+    def standard_reports_slides(self, ix=None, out_path=None, group_name='group', qs=None, fig_width_tex=None ):
+        '''
+        # Standard set of slides for a sub-group, defined by the index ix
+        '''
+        #
+        # Standard frontmatter bits:
+        # NOTE: except for diagnostic purposes, this should probably usually be None and default to the parent object.
+        #  otherwise, it becomes difficult to stitch together the .tex object. Namely, it becomes necessary to use either
+        #  absolute paths for figure refrences, which are not portable, or really complex navigation of relative paths --
+        #  which maybe Python can do for us? we'd maybe have a figure path like ../../p1/p2/figname.png.
+        #
+        if out_path is None:
+            out_path =self.out_path
+            #out_path = os.path.join(self.out_path, 'figs')
+        out_path_figs = os.path.join(out_path, 'figs')
+        
+        if not os.path.isdir(out_path_figs):
+            os.makedirs(out_path_figs)
+        #
+        # this is mostly to remind us that this part is still messy. this is the figs path to write into the tex file.
+        # for this to be rigorous, we must either 1) not allow an out_path input, 2) use an absolut path, or 3) do a difficult navigation
+        #  of the relative path, all of which are messy or limit debugging options, etc. so we'll maybe let this break sometimes...
+        out_path_figs_tex = 'figs'
+        #
+        qs = qs or self.qs
+        fig_width_tex = (fig_width_tex or self.fig_width_tex)
+        fig_size=self.fig_size
+        #
+        ###################################
+        #
+        # tex corrected group name:
+        group_name_tex = group_name.replace('_', '\_')
+        group_name_tex = group_name_tex.replace('\\_', '\_')
+        #
+        # make figures and add slides:
+        activity_figname       = '{}_activity_ts.png'.format(group_name)
+        periodic_figname_rect  = '{}_periodic_usage_rect.png'.format(group_name)
+        periodic_figname_polar = '{}_periodic_usage_polar.png'.format(group_name)
+        #
+        activity_figpath = os.path.join(out_path_figs, activity_figname )
+        periodic_figpath_rect = os.path.join(out_path_figs, periodic_figname_rect )
+        periodic_figpath_polar = os.path.join(out_path_figs, periodic_figname_polar )
+        #
+        act_fig = self.activity_figure(ix=ix, fout_path_name=activity_figpath, group_name=group_name)
+        per_fig = self.periodic_usage_figure(ix=ix, fout_path_name=periodic_figpath_rect, qs=qs, fig_size=fig_size,
+                group_name=group_name)
+        per_fig_polar = self.periodic_usage_figure(ix=ix, fout_path_name=periodic_figpath_polar, qs=qs, fig_size=fig_size,
+                group_name=group_name, projection='polar' )
+        #
+        self.HPC_tex_obj.add_fig_slide(fig_title='{}: CPU/Jobs Requests'.format(group_name_tex),
+            width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, activity_figname) )
+        #
+        self.HPC_tex_obj.add_fig_slide(fig_title='{}: Periodic usage'.format(group_name_tex),
+            width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, periodic_figname_rect))
+        #
+        self.HPC_tex_obj.add_fig_slide(fig_title='{}: Periodic Clock-Plots'.format(group_name_tex),
+            width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, periodic_figname_polar))
+        #
+    #
+    #
+    def activity_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, n_points_wkly_hrs=None, group_name='group', verbose=0):
+        # images then slides for just one group, which we define from an index.
+        #
+        # TODO:
+        # how is ix=None handled in called functions? ideally, we want to avoid passing a large index if possible.
+        if qs is None:
+            qs = self.qs
+        fig_size = (fig_size or self.fig_size)
+        #
+        if fout_path_name is None:
+            out_path = self.out_path
+            #cpu_usage_fig_name = os.path.join('figs', '{}_cpu_usage.png'.format(ky))
+            fname = 'cpu_usage.png'
+            fout_path_name = os.path.join(out_path, fname)
+        #
+        if n_points_wkly_hrs is None:
+            n_points_wkly_hrs = self.n_points_wkly_hrs
+        #
+        # compute figures:
+        wkly_hrs = self.SACCT_obj.get_cpu_hours(bin_size=7, n_points=n_points_wkly_hrs, IX=ix, verbose=0)
+        act_jobs = self.SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
+        #
+        if len(act_jobs)==0:
+            print('Group: {}:: no records.'.format(group_name))
+            #print('Group: :: no records.' )
+            #continue
+            # TODO: return empty set?
+            return None
+        #
+        # active jobs/cpus and weekly cpu-hours:
+        fg = plt.figure(figsize=fig_size)
+        ax1 = plt.subplot('211')
+        ax1.grid()
+        ax1a = ax1.twinx()
+        ax2 = plt.subplot('212', sharex=ax1)
+        ax2.grid()
+        #
+        ax1.plot(act_jobs['time'], act_jobs['N_jobs'], ls='-', lw=2., marker='', label='Jobs', alpha=.5 )
+        ax1a.plot(act_jobs['time'], act_jobs['N_cpu'], ls='--', lw=2., marker='', color='m',
+                  label='CPUs', alpha=.5)
+        #
+        fg.suptitle('Group: {}'.format(group_name), size=16)
+        ax1a.set_title('Active Jobs, CPUs')
+        #
+        ax2.plot(wkly_hrs['time'], wkly_hrs['cpu_hours']/7., ls='-', marker='.', label='bins=7 day', zorder=11)
+        #
+        ax1.set_ylabel('$N_{jobs}$', size=14)
+        ax1a.set_ylabel('$N_{cpu}$', size=14)
+        #
+        ax1.legend(loc='upper left')
+        ax1a.legend(loc='upper right')
+        #
+        ax2.set_ylabel('Daily CPU hours', size=16)
+        #
+        fg.canvas.draw()
+        #
+        # set ax3 labels to dates:
+        # now format the datestrings...
+        for ax in (ax1,):
+            #print('*** xticklabels(): {}'.format([s.get_text() for s in ax.get_xticklabels() ] ) )
+            #print('*** xcticks(): {}'.format( ax.get_xticks() ) )
+            #print('*** lbls_prim: {}'.format([simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]) )
+            #print('*** act_jobs[time]: {}'.format(act_jobs['time']))
+            #
+            #break
+            # TODO: FIXME: so... this grossly malfunctions for fs-scarp1. it picks up the second positional argument as text, instead of the first. aka:
+#                ticklabels:  [Text(737445.5269299999, 0, '0.000030'), Text(737445.526935, 0, '0.000035'), Text(737445.5269399999, 0, '0.000040'), Text(737445.5269449999, 0, '0.000045'), Text(737445.52695, 0, '0.000050'), Text(737445.5269549999, 0, '0.000055'), Text(737445.5269599999, 0, '0.000060')]
+#                ticklabels:  ['0.000030', '0.000035', '0.000040', '0.000045', '0.000050', '0.000055', '0.000060']
+#                from this:
+#                print('\nticklabels: ', [s for s in ax.get_xticklabels()])
+#                print('ticklabels: ', [s.get_text() for s in ax.get_xticklabels()])
+            #
+            #if ky in ('fs-scarp1'):
+            #    continue
+            #
+            # just trap this so that it works. could throw a warning...
+            try:
+                lbls = [simple_date_string(mpd.num2date( float(s) ) ) for s in ax.get_xticks()]
+            except:
+                print('** WARNING: failed writing date text labels:: {}'.format('lbls = "[simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]" '))
+                print('"*** SysInfo: {}'.format(sys.exc_info()[0]))
+                print('*** trying to write x-ticks with failsafe mmpd.num2date(max(1, float(s.get_text())) )')
+                lbls = [simple_date_string(mpd.num2date( float(s) ) ) for s in ax.get_xticks()]
+            #
+            ax.set_xticklabels(lbls)
+        #
+        #
+        # Save figure:
+        plt.savefig(fout_path_name)
+    #######
+    #
+    def periodic_usage_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None,
+            group_name='group', projection=None):
+        '''
+        # periodic usage (aka, jobs per hour-of-day, etc.)
+        #
+        '''
+        #
+        if fig_size == None:
+            fig_size=self.fig_size
+        #
+        if qs is None:
+            qs = self.qs
+        #
+        if fout_path_name is None:
+            out_path = self.out_path
+            #
+            fname = 'periodic_usage.png'
+            fout_path_name = os.path.join(out_path, fname)
+        #
+        # TODO: is there a beter way to handle the image. here, we use plt. to get the (implicit) current figure/axis object,
+        #  but this is kind of a dumb way to do this -- it would be better to have a defined figure or axis instance. return one? add a parameter
+        #  for suptitle(), and other stuff too? or just don't add suptitle() and pass a foutname().
+        #
+        #act_jobs = SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0)
+        zz = self.SACCT_obj.active_cpu_jobs_per_day_hour_report(qs=qs,
+                                            figsize=fig_size,
+                                            cpu_usage=self.SACCT_obj.active_jobs_cpu(bin_size=None, t_min=None, ix=ix, verbose=0),
+                                            foutname=None, periodic_projection=projection)
+        plt.suptitle('Periodic Usage: {}'.format(group_name), size=16)
+        #
+        plt.savefig(fout_path_name)
 #
 def get_group_users(user_id):
     # # and get a list of users to construct an index:
@@ -1623,7 +1942,60 @@ def time_bin_aggregates(XY, bin_mod=24, qs=numpy.array([.25, .5, .75])):
     return numpy.array([tuple(rw) for rw in stats_output], dtype=[('x', '>f8'), ('mean', '>f8'),
                                                         ('stdev', '>f8')] + 
                                          [('q_{}'.format(q), '>f8') for q in qs])
-    return X_out
+    #return X_out
 
 #
-
+#
+# helper functions:
+@numba.jit
+def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={}):
+    # use this with MPP processing:
+    # ... but TODO: it looks like in the Class() scope, this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
+    #  class object... so we need to move the MPP object out of class.
+    #  for now, let's assume that the map() (or whatever) will consolidate and (pseudo-)vectorize. Maybe this should be a Process() object....
+    #  or at lest a small class, initialized with all but rw (the iterable), so we can call it easily wiht map_async()
+    #
+    # use this for MPP processing:
+    rws = rw.split(delim)
+    #return [None if vl=='' else self.types_dict.get(col,str)(vl)
+    #            for k,(col,vl) in enumerate(zip(self.headers, rw.split(self.delim)[:-1]))]
+    return [None if vl=='' else types_dict.get(col,str)(vl)
+                for k,(col,vl) in enumerate(zip(headers, rws[:-1]))] + [rws[RH['JobID']].split('.')[0]]
+#
+@numba.jit
+def get_modulus_stats(X,Y, a_mult=1., a_mod=1., qs=numpy.array([.5, .75, .95])):
+    '''
+    # NOTE: in retrospect, this simple script has its moments of usefulness, but a lot of these cases still need
+    #  to be custom coded to get the right type of aggregation. In many cases -- namely where we are just counting
+    #  in some modulo bin, we need to define a second binning over which to do averaging (ie, k_week = k//k0, k_day=k%k0),
+    #  and we'd want to aggregate for each k_week, all of k_day. This can be expensive, so we might want to come up with
+    #  something simpler.
+    #
+    # stats of Y on X' = (x*a_mult)%a_mod.
+    # for example, to get hour-of-day from a X=mpd.date2num() sequence (where the integer unit is days), HoD=(X*24)%24.
+    #  to get Day of Week, DoW = (X*1)%7
+    #
+    # of course, this can be done with just a fraction (a_mult=1, a_mod={not-integer), but this can introduce numerical error
+    #  and is less intuitive to some.
+    '''
+    #
+    X_prime = (numpy.array(X)*a_mult)%a_mod
+    #
+    # note: this will come back sorted.
+    X0 = numpy.unique(X_prime)
+    #
+    # TODO: consider sorting and then k_j=index(X_sorted,j) -- or something like that.
+    #  a night-n-day performance improvement is not obvious; there are a couple of loops through
+    #  the vector to do this, and part of it has to be done outside of vectorization if we are to avoid
+    #  re-scanning the early part of the vector. so we'll save that for a later upgrade.
+    #
+    # ... and there probably is a way to do this by broadcasting over unique indices and then aggregating
+    #  over an axis, but it will cost some memory to do so, and the savings -- again , is not clear.
+    # ... and memory has been a problem in the past, so for now we'll walk a line with memory efficiency as a real consideration.
+    #
+    quantiles = numpy.array([numpy.percentile(Y[X_prime==j], 100.*numpy.array(qs)) for j in X0])
+    means = numpy.array([numpy.mean(Y[X_prime==j], 100.*numpy.array(qs)) for j in X0])
+    #
+    return numpy.core.records.fromarrays(numpy.append([X0, means], quantiles.T, axis=0),
+             dtype=[('time', '>f8'), ('mean', '>f8')] +
+            [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
