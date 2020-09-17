@@ -11,7 +11,7 @@ ENDTIME="2020-11-30"
 # old-school format list elements for jobarrayid, stepid, arraytaskid (i think, maybe not in that order)
 # -o %F, %i, %K,
 # note, little "-o", but it looks like -o, -O, --Format, --format are all cross-supported ? or at least partially? It also looks like the field names are not cap-sensitive?
-FORMAT="User,Group,GID,Jobname,JobID,JobIDRaw,partition,state,time,ncpus,nnodes,Submit,Eligible,start,end,elapsed,SystemCPU,UserCPU,TotalCPU,NTasks,CPUTimeRaw,Suspended,,ReqGRES,AllocGRES,ReqTRES,AllocTRES"
+FORMAT="User,Group,GID,Jobname,JobID,JobIDRaw,partition,state,time,ncpus,nnodes,Submit,Eligible,start,end,elapsed,SystemCPU,UserCPU,TotalCPU,NTasks,CPUTimeRaw,Suspended,ReqGRES,AllocGRES,ReqTRES,AllocTRES"
 #,MaxRss,MaxVMSize
 #
 #FORMAT="ALL"
@@ -19,16 +19,13 @@ PARTITION="serc"
 #
 #srun sacct -a -p --delimiter="|" --${STARTTIME} --format=User,Group,GID,JobID,Jobname,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended
 
-srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019-08-16 --endtime=2019-09-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2019-09-16 --endtime=2019-10-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2019-10-16 --endtime=2019-11-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2019-11-16 --endtime=2019-12-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2019-12-16 --endtime=2020-01-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-01-16 --endtime=2020-02-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-02-16 --endtime=2020-03-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-03-16 --endtime=2020-04:-15 --format=${FORMAT}
-
-
+srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2020-02-15 --endtime=2020-03-15 --format=${FORMAT}
+srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-03-15 --endtime=2020-04-15 --format=${FORMAT}
+srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-04-15 --endtime=2020-05-15 --format=${FORMAT}
+srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-05-15 --endtime=2020-06-15 --format=${FORMAT}
+srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-06-15 --endtime=2020-07-15 --format=${FORMAT}
+srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-07-15 --endtime=2020-08-15 --format=${FORMAT}
+srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-08-15 --endtime=2020-09-15 --format=${FORMAT}
+srun sacct --allusers --partition=$PARTITION -p --noheader --delimiter="|" --starttime=2020-09-15 --endtime=2020-10-15 --format=${FORMAT}
+#
 #srun sacct --allusers --partition=hns -p --delimiter="|" --starttime=${STARTTIME} --endtime=${ENDTIME} --format=${FORMAT}
-
-
