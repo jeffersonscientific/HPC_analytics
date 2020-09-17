@@ -164,6 +164,8 @@ class SACCT_data_handler(object):
             #
             types_dict=self.default_types_dict
         #
+        self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        #
         # especially for dev, allow to pass the recarray object itself...
         if isinstance(data_file_name, str):
             # if on the off-chance we are creating hdf5, assume it is properly configured will just work:
@@ -269,22 +271,22 @@ class SACCT_data_handler(object):
         #
         return None
     #
-    def calc_jobs_summary(self, data):
+    def calc_jobs_summary(self, data=None, verbose=None):
         '''
         # compute jobs summary from (raw)data
         '''
         if data is None: data = self.data
+        if verbose is None: verbose=self.verbose
         #
         ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
         #
-        # NOTE: this can be a lot of string type data, so being efficient with strign parsing makes a difference...
+        # NOTE: this can be a lot of string type data, so being efficient with string parsing makes a difference...
         job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
                                                     for s in data['JobID'][ix_user_jobs] ])}
         #
         #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
         for k,s in enumerate(data['JobID_parent']):
             job_ID_index[s] += [k]
-        #
         #
         if verbose:
             print('Starting jobs_summary...')
@@ -339,7 +341,7 @@ class SACCT_data_handler(object):
             headers_rw = fin.readline()
             if verbose:
                 print('*** headers_rw: ', headers_rw)
-            #headers = headers_rw[:-1].split(delim)[:-1]
+            #
             headers = headers_rw[:-1].split(delim)[:-1] + ['JobID_parent']
             self.headers = headers
             #
@@ -356,7 +358,7 @@ class SACCT_data_handler(object):
             n_rws = 0
             # 
             # TODO: reevaluate readlines() vs for rw in...
-            #n_cpu = mpp.cpu_count()
+            #
             # eventually, we might need to batch this.
             if n_cpu > 1:
                 # TODO: use a context manager syntax instead of open(), close(), etc.

@@ -60,7 +60,7 @@ def main(data_file_name='data/sacct_owners_out_3500489.out', pickle_in=True, pic
             sacct_mazama = pickle.load(fin)
     else:
         print('** Building new SACCT_data_handler() from: {}'.format(data_file_name))
-        sacct_mazama = hpc_lib.SACCT_data_handler(data_file_name=data_file_name, n_cpu=n_cpu, max_rows=max_rows)
+        sacct_mazama = hpc_lib.SACCT_data_handler(data_file_name=data_file_name, n_cpu=n_cpu, max_rows=max_rows, verbose=False)
         #
 	#
         if pickle_out:
