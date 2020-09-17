@@ -55,6 +55,7 @@ def str2date_num(dt_str, verbose=0):
         return None
 #
 def simple_date_string(dtm, delim='-'):
+    # TODO: replace str() call with a proper .encode(), maybe .encode('utf-8') ?
     return delim.join([str(x) for x in [dtm.year, dtm.month, dtm.day]])
 #
 #@numba.jit
@@ -132,6 +133,7 @@ def running_mean(X, n=10):
 #
 class SACCT_data_handler(object):
     #
+    # TODO: write GRES (gpu, etc. ) handler functions.
     dtm_handler_default = str2date_num
     default_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
             'Timelimit':elapsed_time_2_day,
@@ -139,7 +141,7 @@ class SACCT_data_handler(object):
                         'Eligible':dtm_handler_default,
                     'Elapsed':elapsed_time_2_day, 'MaxRSS':str,
             'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 
-                        'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day}
+                        'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day, 'NTasks':int}
     #
     time_units_labels={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes','minute':'minutes', 'minutes':'minutes', 'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
     #    
@@ -161,40 +163,20 @@ class SACCT_data_handler(object):
             # handle all of the dates the same way. datetimes or numbers? numbers are easier for most
             #. purposes. Also, they don't morph unpredictably when transfered from one container to another.
             #. Dates are always a pain...
-            #dtm_handler = str2date
-            #dtm_handler = str2date_num
+            #
             types_dict=self.default_types_dict
         #
-        #n_cpu = (n_cpu or mpp.cpu_count() )
-        n_cpu = (n_cpu or 8)
-        #
-        self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
-        #
-        # allow multiple inputs:
-        # we need to work out duplicates before we can do this. for now, if we have to concatenate files, 
-        #. let's either do it off-line or otherwise semi-manually.
-        #
-#         if not (isinstance(data_file_name, list) or isinstance(data_file_name, tuple) ):
-#             data_file_name = [data_file_name]
-#         #
-#         for k, dfn in enumerate(data_file_name):
-#             if isinstance(dfn, str):
-#                 dta = self.load_sacct_data()
-#             #
-#             if k == 0:
-#                 self.data = dta.copy()
-#             else:
-#                 self.data = numpy.append(self.data, dta)
-#             #
-#         #
-#         # this is inefficient (we should do it before we make the arrays, or pass the array of filenames
-#         #. to load_sacct_data(), but for now...
-#         # de-dupe using numpy.unique(). Note rows need to be cast as tuple()
-#         self.data = numpy.core.records.fromarrays(zip(*numpy.unique([tuple(rw) for rw in self.data])), dtype=self.data.dtype)
-
         # especially for dev, allow to pass the recarray object itself...
         if isinstance(data_file_name, str):
-            self.data = self.load_sacct_data()
+            # if on the off-chance we are creating hdf5, assume it is properly configured will just work:
+            if os.path.splitext(data_file_name)[1] == 'h5':
+                with hdf5.File(data_file_name, 'r') as fin:
+                    self.data = fin['data'][:]
+            else:
+                self.data = self.load_sacct_data()
+            #
+            # If we are given a data file name as an input, and there is no hdf5 output name, create one from the data file input.
+            #  otherwise, we'll use something more generic (see below).
             if h5out_file is None:
                 h5out_file = '{}.h5'.format(os.path.splitext(data_file_name)[0])
         else:
@@ -211,63 +193,51 @@ class SACCT_data_handler(object):
         # local shorthand:
         data = self.data
         #
-        # sorting indices:
-        # (maybe rename ix_sorting_{description} )
-        index_job_id = numpy.argsort(self.data['JobID'])
-        #index_start  = numpy.argsort(self.data['Start'])
-        #index_end   = numpy.argsort(self.data['End'])
+        jobs_summary = self.calc_jobs_summary()
+        # BEGIN old jobs_summary code:
+#        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in self.data['JobID']])
+#        #
+#        #job_ID_index = {ss:[] for ss in numpy.unique([s.split('.')[0]
+#        #                                            for s in self.data['JobID'][ix_user_jobs] ])}
+#        #
+#        # this might be faster to get the job_ID_index since it only has to find the first '.':
+#        job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
+#                                                    for s in self.data['JobID'][ix_user_jobs] ])}
+#        #
+#        #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
+#        for k,s in enumerate(self.data['JobID_parent']):
+#            job_ID_index[s] += [k]
+#        #
+#        #
+#        if verbose:
+#            print('Starting jobs_summary...')
+#        # we should be able to MPP this as well...
+#        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+#        t_now = mpd.date2num(dtm.datetime.now())
+#        for k, (j_id, ks) in enumerate(job_ID_index.items()):
+#            jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
+#            #
+#            # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
+#            #  use their index position, rather than min()/max()... but we'd need to be more careful about
+#            #. that sorting step, and upstream dependencies are dangerous...
+#            # NOTE: might be faster to index eact record, aka, skip sub_data and for each just,
+#            #. {stuff} = max(data['End'][ks])
+#            #
+#            sub_data = data[sorted(ks)]
+#            #
+#            #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
+#            jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
+#            jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
+#            jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
+#            jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
+#        #
+#        del sub_data
+#        #
+#        if verbose:
+#            print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
         #
-        # group jobs; compute summary table:
-        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in self.data['JobID']])
+        # END old jubs_summary code
         #
-        #job_ID_index = {ss:[] for ss in numpy.unique([s.split('.')[0] 
-        #                                            for s in self.data['JobID'][ix_user_jobs] ])}
-        #
-        # this might be faster to get the job_ID_index since it only has to find the first '.':
-        job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]  
-                                                    for s in self.data['JobID'][ix_user_jobs] ])}
-        #
-        #for k,s in enumerate(self.data['JobID']):
-        #    job_ID_index[s.split('.')[0]] += [k]
-        #    #group_index[s.split('.')[0]] = numpy.append(group_index[s.split('.')[0]], [k])
-        #
-        #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
-        for k,s in enumerate(self.data['JobID_parent']):
-            job_ID_index[s] += [k]
-        #
-        #
-        if verbose:
-            print('Starting jobs_summary...')
-        # we should be able to MPP this as well...
-        #jobs_summary = numpy.recarray(shape=(len(job_ID_index), self.data.shape[1]), dtype=data.dtype)
-        #jobs_summary = numpy.recarray(shape=(len(job_ID_index), ), dtype=data.dtype)
-        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
-        t_now = mpd.date2num(dtm.datetime.now())
-        for k, (j_id, ks) in enumerate(job_ID_index.items()):
-            jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
-            #
-            # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
-            #  use their index position, rather than min()/max()... but we'd need to be more careful about
-            #. that sorting step, and upstream dependencies are dangerous...
-            # NOTE: might be faster to index eacy record, aka, skip sub_data and for each just,
-            #. {stuff} = max(data['End'][ks])
-            #
-            sub_data = data[sorted(ks)]
-            #
-            #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
-            jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
-            jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
-            jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
-            jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
-        #
-        if verbose:
-            print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
-        # Compute a job summary table. What columns do we need to aggregate? NCPUS, all the times: Start,
-        #. End, Submit, Eligible. Note that the End time of the parent job often terminates before (only
-        #. by a few seconds????) the End time of the last step, so we should probably just compute the
-        #. Elapsed time. Start -> min(Start[]), End -> max(End[]), NCPU -> (NCPU of parent job or 
-        #. max(NCPU)). For performance, we'll do well to not have to do logical, string-like operations --
-        #  aka, do algebraic type operations.
         if not keep_raw_data:
             del data
         #
@@ -281,25 +251,78 @@ class SACCT_data_handler(object):
         self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
         self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
     #
-    def write_hdf5(self, h5out_file=None):
+    def write_hdf5(self, h5out_file=None, append=False):
         h5out_file = h5out_file or self.h5out_file
         if h5out_file is None:
             h5out_file = 'sacct_writehdf5_output.h5'
         #
-        with h5py.File(h5out_file, 'a') as fout:
-            #fout.create_group('')
-            # do we need any groups?
-            # raw data?
-            #fout.create_data_set('data_raw', data=self.data)
-            fout.create_dataset('jobs_summary', data=self.jobs_summary)
-            fout.create_dataset('cpu_usage', data=self.cpu_usage)
-            fout.create_dataset('weekly_hours', data=self.weekly_hours)
-            fout.create_dataset('daily_hours', data=self.daily_hours)
-            #
+        if not append:
+            with h5py.File(h5out_file, 'w') as fout:
+                # over-write this file
+                pass
         #
+        if 'data' in self.__dict__.keys():
+            array_to_hdf5_dataset(input_array=self.data, dataset_name='data', output_fname=h5out_file, h5_mode='a')
+        #
+        array_to_hdf5_dataset(input_array=self.jobs_summary, dataset_name='jobs_summary', output_fname=h5out_file, h5_mode='a')
+        array_to_hdf5_dataset(input_array=self.cpu_usage, dataset_name='cpu_usage', output_fname=h5out_file, h5_mode='a')
+        array_to_hdf5_dataset(input_array=self.weekly_hours, dataset_name='weekly_hours', output_fname=h5out_file, h5_mode='a')
+        array_to_hdf5_dataset(input_array=self.daily_hours, dataset_name='daily_hours', output_fname=h5out_file, h5_mode='a')
+        #
+        return None
+    #
+    def calc_jobs_summary(self, data):
+        '''
+        # compute jobs summary from (raw)data
+        '''
+        if data is None: data = self.data
+        #
+        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+        #
+        # NOTE: this can be a lot of string type data, so being efficient with strign parsing makes a difference...
+        job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
+                                                    for s in data['JobID'][ix_user_jobs] ])}
+        #
+        #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
+        for k,s in enumerate(data['JobID_parent']):
+            job_ID_index[s] += [k]
+        #
+        #
+        if verbose:
+            print('Starting jobs_summary...')
+        # we should be able to MPP this as well...
+        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+        t_now = mpd.date2num(dtm.datetime.now())
+        for k, (j_id, ks) in enumerate(job_ID_index.items()):
+            jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
+            #
+            # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
+            #  use their index position, rather than min()/max()... but we'd need to be more careful about
+            #. that sorting step, and upstream dependencies are dangerous...
+            # NOTE: might be faster to index eact record, aka, skip sub_data and for each just,
+            #. {stuff} = max(data['End'][ks])
+            #
+            # use a buffer
+            sub_data = data[sorted(ks)]
+            #
+            #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
+            jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
+            jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
+            jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
+            jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
+            #
+            # move this into the loop. weird things can happen with buffers...
+            del sub_data
+        #
+        if verbose:
+            print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
+        #
+        return jobs_summary
     #
     #@numba.jit
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
+        # TODO: this should probably be a class of its own. Note that it depends on a couple of class-scope functions in
+        #  ways that are not really class hierarchically compatible.
         if data_file_name is None:
             data_file_name = self.data_file_name
         if delim is None:
@@ -417,99 +440,9 @@ class SACCT_data_handler(object):
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
                     for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
     #
-#    @numba.jit
-#    def get_cpu_hours_2(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
-#        '''
-#        # NOTE: it might still be better to transpose the looping, but doing it this was makes computing weekly, daily, etc.
-#        #  bin sizes a little more complicated, so let's just skip it for now (but keep this code in place, 'lest we want to
-#        #  repurpose it later.
-#        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
-#        #. but it should be manageable).
-#        # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
-#        #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
-#        '''
-#        #
-#        # invert get_cpu_ours(), so primary-loop through jobs_summary and map cpu_count and _hours for t_start -> t_end
-#        #  over X. block out the loop as much as necessary for memory efficienty. Also, one of the major memory savings will
-#        #  be to not pre-comnpute the IX_k index
-#        #
-#        # Front matter: validate inputs, set up max/min domains, etc.
-#        if jobs_summary is None:
-#            jobs_summary = self.jobs_summary
-#        #
-#        if verbose:
-#            print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
-#        # NOTE: passing a None index appears to have a null effect -- just returns the whole array, but it does not.
-#        #  when we pass None as an index, the columns are returned with elevated rank. aka,
-#        #  (X[None])[col].shape == (1, n)
-#        #  (X[col].shape == (n,)
-#        #  (X[ix])[col].shape == (n,)
-#        if not IX is None:
-#            jobs_summary = jobs_summary[IX]
-#        #
-#        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
-#        if verbose:
-#            print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
-#        #
-#        if len(jobs_summary)==0:
-#            return numpy.array([], dtype=[('time', '>f8'),
-#            ('t_start', '>f8'),
-#            ('cpu_hours', '>f8'),
-#            ('N_jobs', '>f8')])
-#        #
-#        # NOTE: See above discussion RE: [None] index and array column rank.
-#        t_start = jobs_summary['Start']
-#        #t_start = jobs_summary['Start'][0]
-#        #
-#        t_end = jobs_summary['End']
-#        #t_end = jobs_summary['End'][0]
-#        if verbose:
-#            print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
-#        #
-#        # for unfinished jobs, assing the "now" time:
-#        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
-#        #
-#        if verbose:
-#            print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
-#        #
-#        #
-#        if t_min is None:
-#            t_min = numpy.nanmin([t_start, t_end])
-#        t_max = numpy.nanmax([t_start, t_end])
-#        #
-#        # can also create X sequence like this, for minute resolution
-#        # X = numpy.arange(t_min, t_max, 1./(24*60))
-#        #
-#        CPU_H = numpy.zeros
-#        X = numpy.linspace(t_min, t_max, n_points)
-#        dX = (t_max - t_min)/n_points
-#        #
-#        cpu_h = numpy.zeros(n_points)
-#        # TODO: figure out the n_jobs we want to measure. job-hours maybe?
-#        #n_jobs = numpy.zeros(n_points)
-#        #
-#        # in steps
-#        #IX_t = numpy.array([numpy.logical_and(t_start<=t, t_end>t) for t in X])
-#        if verbose:
-#            print('*** debug: starting IX_k')
-#        #
-#        # So... if necessary, assume sufficient X resolution and use integer value approximations for counting active time.
-#        # integer math will be faster, and we can save some steps as well. For now, I think we can add fractional ends (to the
-#        # job times)
-#        for job in self.jobs_summary:
-#            #
-#            # TODO: wrap into function so we can run in parallel. use MPI4py?
-#            k_start = X.searchsorted(job['Start'])
-#            k_end   = X.searchsorted(job['End'])
-#            #
-#            # cpu_h[k_start:k_end+1] = numpy.array([X[k_start] - 2.2, *numpy.ones(k_end-k_start-1)*1.0, 7.7-X[k_end-1] ])
-#            cpu_h[k_start:k_end+1] += job['NCPUS']*numpy.array([X[k_start] - job['Start'], *numpy.ones(k_end-k_start-1)*dX, job['End']-X[k_end-1] ])
-#        #
-#        # now, normalize to cpu-hours/day:
-#        cpu_h *= 24./dx
-#        #
-#        return numpy.array([tuple(rw) for rw in numpy.array([X, cpu_h ], dtype=[('time', '>f8'), ('cpu_hours', '>f8')] )])
-##
+    # GIT Note: Deleting the depricated get_cpu_hours_2() function here. It can be recovered from commits earlier than
+    #  31 Aug 2020.
+    #
     #@numba.jit
     def get_cpu_hours_depricated(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
         '''
@@ -982,16 +915,25 @@ class SACCT_data_handler(object):
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit']
     #
     def export_primary_data(self, output_path='data/SACCT_full_data.csv', delim='\t'):
+        # DEPRICATION: This does not appear to work very well, and we have HDF5 options, so consider this depricated
+        #  and maybe remove it going forward.
+        #
+        # NOTE: we may be be deleting the primary data, since it is really not useful (the jobs_summary is what we really want),
+        #  so this function could be (mostly) broken at this point.
+        #
         #pth = pathlib.Path(outputy_path)
         #
         # in the end, this is quick and easy, but for a reason -- it does not work very well.
         #. same goes for the quick and easy PANDAS file read method. it casts strings and other
         #. unknowns into Object() classes, which we basically can't do anything with. to reliably
         #. dump/load data to/from file, we need to handle strings, etc. but maybe we just pickle()?
+        # ... or see hdf5 options now mostly developed.
         return self.data.tofile(outputy_path,
                                         format=('%s{}'.format(delim)).join(self.headers), sep=delim)
     #
     def export_summary_data(self, output_path='data/SACCT_summaruy_data.csv', delim='\n'):
+        # DEPRICATION: This does not appear to work very well, and we have HDF5 options, so consider this depricated
+        #  and maybe remove it going forward.
         #
         return self.jobs_summary.tofile(output_path,
                                         format='%s{}'.format(delim).join(self.headers), sep=delim)
@@ -1269,14 +1211,58 @@ class SACCT_data_handler(object):
         return {'cpu_hourly':cpu_hourly, 'jobs_hourly':jobs_hourly, 'cpu_weekly':cpu_weekly, 'jobs_weekly':jobs_weekly}
 
     
-class SACCT_data_from_inputs(SACCT_data_handler):
+class SACCT_data_from_h5(SACCT_data_handler):
     # a SACCT_data handler that loads input file(s). Most of the time, we don't need the primary
     #. data; we only want the summary data. We'll allow for both, default to summary...
     #. assume these are in a format that will natively import as a recarray (we'll use recarray->text 
     #. methods to produce them).
     #
-    def __init__(self, summary_filename=None, primary_data_filename=None):
-        pass
+    # TODO: rewrite the existing SACCT handler as a base class; rewrite the existing class as a subclass, parallel with this one.
+    #  for now, just reproduce a bunch of the __init__() function.
+    #
+    def __init__(self, h5in_file=None, h5out_file=None, types_dict=None, chunk_size=1000, n_cpu=None,
+    n_points_usage=1000, verbose=0, keep_raw_data=False):
+        #
+        n_cpu = n_cpu or 8
+        #
+        if h5in_file is None or h5in_file=='':
+            raise Exception('Inalid input file.')
+        #
+        with h5py.File(h5in_file, 'r') as fin:
+            #
+            # just load everythning? then check for exceptions?
+            for ky,ary in fin.items():
+                # is this a good idea? this should be lioke self.ky=ary[:], but I always wonder
+                #  if hijackeing the internal __dict__ is a bad idea...
+                #
+                self.__dict__[ky]=ary[:]
+            del ky,ary
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+            #
+        #
+        ############################
+        if types_dict is None:
+            types_dict=self.default_types_dict
+        # some bits we might need:
+        # note: if we don't have jobs_summary, we probably have bigger problems, so let's not go there for now.
+        self.headers = self.jobs_summary.dtype.names
+        # not sure we need this one, but won't hurt:
+        self.RH = {h:k for k,h in enumerate(self.headers)}
+        #
+        if not 'cpu_usage' in self.__dict__.keys():
+            self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
+        if not 'weekly_hours' in self.__dict__.keys():
+            self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
+        if not 'daily_hours' in self.__dict__.keys():
+            self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
+            #
+        #
+        # especially for dev, allow to pass the recarray object itself...
+        if h5out_file is None:
+            h5out_file = h5in_file
+        self.h5out_file = h5out_file
+        #
 #
 class Tex_Slides(object):
     def __init__(self, template_json='tex_components/EARTH_Beamer_template.json',
@@ -1999,3 +1985,97 @@ def get_modulus_stats(X,Y, a_mult=1., a_mod=1., qs=numpy.array([.5, .75, .95])):
     return numpy.core.records.fromarrays(numpy.append([X0, means], quantiles.T, axis=0),
              dtype=[('time', '>f8'), ('mean', '>f8')] +
             [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
+#
+def array_to_hdf5_dataset(input_array, dataset_name, output_fname='outfile.h5', h5_mode='a', verbose=0):
+    '''
+    # copy input_array into a datset() object inside an hdf5 File object (aka, hdf5_handler.create_dataset(dataset_name, numpy.shape(input_array) )
+    # @input_array: a numpy structured- or rec-array (like) object
+    # @dataset_name: (string) name of the data set.
+    # @output_fname: hdf5 output file
+    # @h5_mode: file open mode, aka with hdf5.File(dataset_name, h5_mode):
+    #
+    '''
+    #
+    # need to handle if dtype, but for now just assume (or change this function to assume):
+    new_dtype = []
+    for nm, tp in input_array.dtype.descr:
+        new_type = tp
+        #  or tp.startswith('|S') ??
+        if tp == '|O':
+            #print('*** converting: [{}], {}, {} '.format(nm, tp, input_array[nm][0:20]) )
+            new_type = 'S{}'.format(numpy.max([len(fix_to_ascii(str(s))) for s in input_array[nm] ]) )
+        #
+        # we might actually be able to get rid of this condition. These are HDF5 definitions,
+        #  so they might work fine here...
+        if isinstance(tp, tuple):
+            # TODO: we get advanced types that include encoding information, like:
+            #  ('User', ('|S8', {'h5py_encoding': 'ascii'}))
+            #   We shoule (eventually) handle th encoding more rigorously.
+            #
+            new_type=(tp[0])[1:]
+        #
+        new_dtype += [(nm, new_type)]
+    #
+    if verbose:
+        print('*** ndt', new_dtype)
+    #
+#     print('** ', sacct_obj.jobs_summary.dtype.descr)
+#
+    with h5py.File(output_fname, h5_mode) as fout:
+        #fout.create_dataset('jobs_summary', data=sacct_obj.jobs_summary,
+        #                    dtype=new_dtype)
+        #
+        # this works, but seems clumsy...
+        ds = fout.create_dataset(dataset_name, input_array.shape,
+                            dtype=new_dtype)
+        #
+        if verbose:
+            print('*** DEBUG: dataset created; update data.')
+        #for k,cl in enumerate(input_array.dtype.names):
+        for k, (cl, tp) in enumerate(ds.dtype.descr):
+            print('*** DEBUG: updating column [{}], type={}'.format(cl, tp))
+            #if tp.startswith('S'):
+            if isinstance(tp, tuple):
+                # probably a string-like type, or maybe a blob or something.
+                # can I .encode() the whole array at once?
+                # they appear to look like this:
+                # type=('|S8', {'h5py_encoding': 'ascii'})
+                #
+                # should be able to do something like one of these:
+                #ds[cl]=input_array[cl][:].astype(tp[1]['h5py_encoding'])
+                #ds[cl]=input_array[cl][:].astype(numpy.str)
+                #
+                #ds[cl]=[s.encode(tp[1].get('h5py_encoding', 'ascii') ) for s in input_array[cl]]
+                ds[cl]=[fix_to_ascii(s) for s in input_array[cl]]
+                
+            else:
+                ds[cl]=input_array[cl][:]
+        #
+    #
+    return None
+#
+def fix_to_ascii(s):
+    if s is None:
+        return ''
+    #
+    # TODO: better string handling please...
+    #chrs = [[8211, '--'],]
+    chrs = {8211:'--', 2013:'_'}
+    for k,c in chrs.items():
+        #print('** chrs:', k,c,s)
+        s = s.replace(chr(k),c)
+    #
+    # rigorously,we might need something like this:
+    out_str = ''
+    for c in s:
+        #
+        #cc = chrs.get(ord(c), c)
+        #for c1 in cc:
+        #    out_str += chr(max(127, ord( c1) ) )
+        out_str += chr(min(127, ord(c)))
+    #
+    # but let's see if it will be necessary, or if there's a smarter way to do it.
+    #
+    return out_str
+        
+        
