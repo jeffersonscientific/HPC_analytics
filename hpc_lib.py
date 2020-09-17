@@ -123,8 +123,6 @@ def elapsed_time_2_sec_v(tm_in, verbose=0):
     return numpy.dot([day_2_sec, 3600., 60., 1.], [float(x) for x in (days, h, m, s)])
     #return float(days)*day_2_sec + float(h)*3600. + float(m)*60. + float(s)
 #
-
-
 #
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
@@ -311,6 +309,8 @@ class SACCT_data_handler(object):
         n_cpu = n_cpu or self.n_cpu
         n_cpu = n_cpu or mpp.cpu_count()
         #
+        if verbose:
+            print('** load_sact_data(), max_rows={}'.format(max_rows))
         #
         with open(data_file_name, 'r') as fin:
             headers_rw = fin.readline()
@@ -323,11 +323,6 @@ class SACCT_data_handler(object):
             # make a row-handler dictionary, until we have proper indices.
             RH = {h:k for k,h in enumerate(headers)}
             self.RH = RH
-            #
-            #self.RH=RH
-            #self.headers=headers
-            #
-            #delim_lines=fin.readline()
             #
             if verbose:
                 print('*** load data:: headers: ', headers)
@@ -360,7 +355,8 @@ class SACCT_data_handler(object):
                 del results
                 del P
             else:
-                data = [self.process_row(rw) for k,rw in enumerate(fin) if (max_rows is None or k<=max_rows) ]
+                #
+                data = [self.process_row(rw) for k,rw in enumerate(fin) if (max_rows is None or k<max_rows) ]
             #
             #all_the_data = fin.readlines(max_rows)
             #

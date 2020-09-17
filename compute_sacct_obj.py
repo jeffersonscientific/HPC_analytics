@@ -19,7 +19,7 @@ import sys, getopt
 # TODO: phase out unreferenced hpc_lib calls...
 import hpc_lib
 #
-def main(data_file_name='data/sacct_owners_out_3500489.out', pickle_in=True, pickle_out=True, n_cpu=8):
+def main(data_file_name='data/sacct_owners_out_3500489.out', pickle_in=True, pickle_out=True, n_cpu=8, max_rows=10000):
     #
     #data_file_name = 'data/sacct_owners_out_3500489.out'
     #data_file_name = 'data/sacct_mazama_0623_tool8.out'
@@ -37,6 +37,7 @@ def main(data_file_name='data/sacct_owners_out_3500489.out', pickle_in=True, pic
     #
     pkl_name = "{}.pkl".format(os.path.splitext(data_file_name)[0])
     tex_fname = '{}.tex'.format(data_fname_root)
+    hdf5_name = '{}.h5'.format(data_fname_root)
     #
     #
     # temporarily, comment these out so we can just run the report:
@@ -58,12 +59,21 @@ def main(data_file_name='data/sacct_owners_out_3500489.out', pickle_in=True, pic
         with open(pkl_name, 'rb') as fin:
             sacct_mazama = pickle.load(fin)
     else:
-        sacct_mazama = hpc_lib.SACCT_data_handler(data_file_name=data_file_name, n_cpu=n_cpu)
+        print('** Building new SACCT_data_handler() from: {}'.format(data_file_name))
+        sacct_mazama = hpc_lib.SACCT_data_handler(data_file_name=data_file_name, n_cpu=n_cpu, max_rows=max_rows)
         #
+	#
         if pickle_out:
+            print('** Writing pickle() object to: {}'.format(pkl_name))
             with open(pkl_name, 'wb') as fout:
                  out_pkl = pickle.dump(sacct_mazama, fout)
             #
+    # For now, piggyback the HDF5 option with pickle_out. Eventually,
+    #  replace pickle() or separate these.
+    if pickle_out:
+        print('** Writing HDF5() object to: {}'.format(hdf5_name))
+        # TODO: move this, or add a parameter, do_h5, or just get rid of pickle. with h5, we don't really need it.
+        h5out=sacct_mazama.write_hdf5(h5out_file=hdf5_name)
         #
     #
 
@@ -88,7 +98,7 @@ if __name__ == '__main__':
     
     if len(sys.argv)>1:
         #print('*** getting args...')
-        opts,args = getopt.getopt(sys.argv[1:], 'f:p:q:n:', ['data_file_name=', 'pickle_in=', 'pickle_out=', 'n_cpu='])
+        opts,args = getopt.getopt(sys.argv[1:], 'f:p:q:n:r:', ['data_file_name=', 'pickle_in=', 'pickle_out=', 'n_cpu='])
         print('*** *** ', opts, args)
         #
         for opt,arg in opts:
@@ -120,6 +130,16 @@ if __name__ == '__main__':
                     n_cpu=max(1, int(arg))
                 #
                 prams['n_cpu'] = n_cpu
+            #
+            if opt in ('-r', '--rows'):
+                if arg in ('None', 'none', 'NONE', 'null', 'NULL', '-1', '0'):
+                    max_rows=None
+                else:
+                    max_rows=int(arg)
+                    if max_rows<0:
+                        max_rows=None
+                #
+                prams['max_rows'] = max_rows
     print('*** prams: ', prams)
     #
     x = main(**prams)
