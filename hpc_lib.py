@@ -156,6 +156,8 @@ class SACCT_data_handler(object):
         #  anything we're doing right now. if it comes to it, maybe we dump it as an HDF5 or actually build a DB of some sort.
         '''
         #
+        n_cpu = n_cpu or 1
+        #
         if types_dict is None:
             #
             # handle all of the dates the same way. datetimes or numbers? numbers are easier for most
@@ -271,18 +273,103 @@ class SACCT_data_handler(object):
         #
         return None
     #
-    def calc_jobs_summary(self, data=None, verbose=None):
+    def calc_summary(self, data=None, verbose=None, n_cpu=None, step_size=100000):
         '''
         # compute jobs summary from (raw)data
+        # @n_cpu: number of comutational elements (CPUs or processors)
+        # @step_size: numer of rows per thread (-like chunks). We'll use a Pool() (probably -- or something) to do the computation. use this
+        #   variable to break up the job into n>n_cpu jobs, so we don't get a "too big to pickle" error. we'll also need to put in a little
+        #  intelligence to e sure the steps are not too small, all distinct job_ids are represented, etc.
         '''
+        # TODO: To (maybe) improve parallelization, move this out of class to a procedure, so the in-class version just passes class-scope variables.
+        #  Question: if the function is in-class, does MPP pickle the whole class to processes, or just the required data? if the latter, we don't really
+        #  need to remove it from the class, except that it can make working with older pickled objects difficult. but since we're introducing HDF5, we won't
+        #  be pickling any longer, so...
+        #
         if data is None: data = self.data
         if verbose is None: verbose=self.verbose
         #
-        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+        # I think the "nonelike" syntax is actually favorable here:
+        n_cpu = (n_cpu or self.n_cpu)
+        n_cpu = (n_cpu or 1)
         #
-        # NOTE: this can be a lot of string type data, so being efficient with string parsing makes a difference...
+        return calc_jobs_summary(data=data, verbose=verbose, n_cpu=n_cpu, step_size=step_size)
+        #
+    def calc_jobs_summary_depricated(self, data=None, verbose=None, n_cpu=None, step_size=100000):
+        '''
+        # DEPRICATION WARNING: This function is deprecated and has been replaced by a class function that simply calls a procedural function by the same
+        #  (original) name. This is to better facilitate parallelization, and particulalry development with parallelization (otherwise, everytime we make
+        #  a change, we have to recompute the whole object).
+        # compute jobs summary from (raw)data
+        # @n_cpu: number of comutational elements (CPUs or processors)
+        # @step_size: numer of rows per thread (-like chunks). We'll use a Pool() (probably -- or something) to do the computation. use this
+        #   variable to break up the job into n>n_cpu jobs, so we don't get a "too big to pickle" error. we'll also need to put in a little
+        #  intelligence to e sure the steps are not too small, all distinct job_ids are represented, etc.
+        '''
+        # TODO: To (maybe) improve parallelization, move this out of class to a procedure, so the in-class version just passes class-scope variables.
+        #  Question: if the function is in-class, does MPP pickle the whole class to processes, or just the required data? if the latter, we don't really
+        #  need to remove it from the class, except that it can make working with older pickled objects difficult. but since we're introducing HDF5, we won't
+        #  be pickling any longer, so...
+        #
+        if data is None: data = self.data
+        if verbose is None: verbose=self.verbose
+        #
+        # I think the "nonelike" syntax is actually favorable here:
+        n_cpu = (n_cpu or self.n_cpu)
+        n_cpu = (n_cpu or 1)
+        #
+        # let's sort here:
+        # NOTE: with this sorted, we can maybe be smarter about finding the groups as well, though I think the improvement will not be extraordinary, since the indices
+        #  end up being sorted and locally grouped anyway. maybe ends up saving a pass or two through the data, but I think the string operations are the ugly bit.
+        # axis=0?
+        # having some trouble with None types in the sort, but not because there are actually None types in the data -- something with the sorting algorithm.
+        #  let's try (for now) specifying the axis (necessary for an indexed array, with order=[] specified???), and the kind variable. getting some conflicting outcomes
+        #  on testing (like worked, then didn't, then what did not work now works... so this might need some sorting (ha, ha!) out. ideally we can use kind=quicksort
+        #data.sort(axis=0, order=['JobID', 'Submit'], kind='stable')
+        #
+        #
+        # we might want to put some of the preliminary work up front to the initial SPP handling.
+        #  For example, filtering out the .batch or .extern jobs early could help with load balancing. but for now,
+        #   push everything to processes (with a little p)
+        if n_cpu > 1:
+            data.sort(axis=0, order=['JobID', 'Submit'], kind='stable')
+            ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
+            #
+            # TODO: some sorting...
+            for j,k in enumerate(ks[1:-1]):
+                while data['JobID'][k] == data['JobID'][k-1]:
+                    k+=1
+                ks[j] = k
+            ks = numpy.unique(ks)
+            
+            ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+            N = len(numpy.unique([s[0:(s+'.').index('.')] for s in data['JobID'][ix_user_jobs] ]) )
+            Jobs_summ_mpp = numpy.array(numpy.zeros(shape=(N, )), dtype=data.dtype)
+            #
+            # ks should be a list of indices between 0 and len+1. This process still needs a little bit of work
+            #  to guarantee subsets are not too long/short, etc. but this much should work
+            #
+            n_cpu = min(n_cpu, len(ks)-1)
+            #
+            with mpp.Pool(n_cpu) as P:
+                R = [P.apply_async(self.calc_jobs_summary, kwds={'data':data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) ]
+                #res = [r.get() for r in R]
+                for (r, k1,k2) in zip(R,ks[0:-1], ks[1:] ) :
+                    jobs_summary[k1:k2]=r.get()[:]
+                #
+            #
+            return jobs_summary
+        #
+        # Single-process code:
+        #
+        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+        # how do we do a distributed string operation in a numpy.array()?
+        #ix_user_jobs = numpy.invert(numpy.logical_or())
+        #
         job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
                                                     for s in data['JobID'][ix_user_jobs] ])}
+        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+
         #
         #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
         for k,s in enumerate(data['JobID_parent']):
@@ -291,7 +378,7 @@ class SACCT_data_handler(object):
         if verbose:
             print('Starting jobs_summary...')
         # we should be able to MPP this as well...
-        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+        #jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
         t_now = mpd.date2num(dtm.datetime.now())
         for k, (j_id, ks) in enumerate(job_ID_index.items()):
             jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
@@ -2075,5 +2162,124 @@ def fix_to_ascii(s):
     # but let's see if it will be necessary, or if there's a smarter way to do it.
     #
     return out_str
+    
+def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=100000):
+    '''
+    # compute jobs summary from (raw)data
+    # @n_cpu: number of comutational elements (CPUs or processors)
+    # @step_size: numer of rows per thread (-like chunks). We'll use a Pool() (probably -- or something) to do the computation. use this
+    #   variable to break up the job into n>n_cpu jobs, so we don't get a "too big to pickle" error. we'll also need to put in a little
+    #  intelligence to e sure the steps are not too small, all distinct job_ids are represented, etc.
+    '''
+    #
+    #
+    if data is None:
+        raise Exception('No data provided.')
+    #
+    n_cpu = (n_cpu or 1)
+    #
+    if n_cpu > 1:
+        # this should sort in place, which could cause problems downstream, so let's use an index:
+        ix_s = numpy.argsort(data, axis=0, order=['JobID', 'Submit'], kind='stable')
+        #
+        working_data = data[ix_s]
+        working_data.sort(axis=0, order=['JobID', 'Submit'], kind='stable')
+        #
+        ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
+        #print('*** *** ks_initial: ', ks)
+        #
+        # TODO: some sorting...
+        for j,k in enumerate(ks[1:-1]):
+            #print('*** k_in: ', k)
+            while working_data['JobID_parent'][k] == working_data['JobID_parent'][k-1]:
+                #print('** ** ', working_data['JobID_parent'][k], working_data['JobID_parent'][k-1])
+                k+=1
+            ks[j+1] = k
+            #print('*** k_out: {}/{}'.format(k, ks[j]))
+        ks = numpy.unique(ks)
+        #print('** ks: {}'.format(ks))
         
-        
+        #ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+        N = len(numpy.unique(data['JobID_parent']) )
+        jobs_summary = numpy.zeros( (N, ), dtype=data.dtype)
+        #
+        # ks should be a list of indices between 0 and len+1. This process still needs a little bit of work
+        #  to guarantee subsets are not too long/short, etc. but this much should work
+        #
+        n_cpu = min(n_cpu, len(ks)-1)
+        #
+        with mpp.Pool(n_cpu) as P:
+            #R = [P.apply_async(calc_jobs_summary, kwds={'data':working_data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) ]
+            #
+            # TODO: this is probably a good place to define a callback; use the callback function to assign the return values to jobs_summary[] as each
+            #  result finishes async.
+            #
+            k=0
+            for r in [P.apply_async(calc_jobs_summary, kwds={'data':working_data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) ]:
+                xx = r.get()
+                dk=len(xx)
+                #
+                jobs_summary[k:k+dk]=xx
+                k += dk
+                #
+                del xx
+                    
+            #
+        #
+        return jobs_summary
+    #
+    # Single-process code:
+    #
+    ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+    # how do we do a distributed string operation in a numpy.array()?
+    #ix_user_jobs = numpy.invert(numpy.logical_or())
+    #
+    # It looks like this was an expensive way to compute data['JobID_parent'], before we knew about _parent. This should save us some compute time!
+    #job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
+    #                                            for s in data['JobID'][ix_user_jobs] ])}
+    job_ID_index = {ss:[] for ss in numpy.unique( data['JobID_parent'] )}
+    #
+
+    #jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+    jobs_summary = numpy.zeros( shape=(len(job_ID_index), ), dtype=data.dtype)
+
+    #
+    #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
+    for k,s in enumerate(data['JobID_parent']):
+        job_ID_index[s] += [k]
+    #
+    if verbose:
+        print('Starting jobs_summary...')
+    # we should be able to MPP this as well...
+    #jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+    t_now = mpd.date2num(dtm.datetime.now())
+    for k, (j_id, ks) in enumerate(job_ID_index.items()):
+        if len(ks)==0:
+            print('*** no ks: {}, {}'.format(j_id, ks))
+        jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
+        #
+        # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
+        #  use their index position, rather than min()/max()... but we'd need to be more careful about
+        #. that sorting step, and upstream dependencies are dangerous...
+        # NOTE: might be faster to index eact record, aka, skip sub_data and for each just,
+        #. {stuff} = max(data['End'][ks])
+        #
+        # use a buffer
+        sub_data = data[sorted(ks)]
+        #
+#        jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
+#        jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
+#        jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
+#        jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
+        #
+        # This is the proper syntax (not forgiving) to assign a row:
+        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes']][k] = numpy.nanmax(sub_data['End']), numpy.nanmin(sub_data['Start']), numpy.max(sub_data['NCPUS']), numpy.max(sub_data['NNodes'])
+        #
+        # move this into the loop. weird things can happen with buffers...
+        del sub_data
+    #
+    if verbose:
+        print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
+    #
+    return jobs_summary
+#
