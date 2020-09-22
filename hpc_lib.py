@@ -550,7 +550,7 @@ class SACCT_data_handler(object):
         if not IX is None:
             jobs_summary = jobs_summary[IX]
         #
-        return get_cpu_hours(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, jobs_summary=jobs_summary, verbose=verbose, n_cpu=n_cpu, step_size=step_size):
+        return get_cpu_hours(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, jobs_summary=jobs_summary, verbose=verbose, n_cpu=n_cpu, step_size=step_size)
     #
     #@numba.jit
     def get_cpu_hours_depricated(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
@@ -708,6 +708,7 @@ class SACCT_data_handler(object):
     #@numba.jit
     def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
         '''
+        # TODO: assess parallel strategy; maybe adjust chunksize to avoid too-big-to-parallel problems.
         # @n_points: number of points in returned time series.
         # @bin_size: size of bins. This will override n_points
         # @t_min: start time (aka, bin phase).
