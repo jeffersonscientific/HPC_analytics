@@ -273,7 +273,7 @@ class SACCT_data_handler(object):
         #
         return None
     #
-    def calc_summary(self, data=None, verbose=None, n_cpu=None, step_size=100000):
+    def calc_jobs_summary(self, data=None, verbose=None, n_cpu=None, step_size=100000):
         '''
         # compute jobs summary from (raw)data
         # @n_cpu: number of comutational elements (CPUs or processors)
@@ -528,112 +528,32 @@ class SACCT_data_handler(object):
     # GIT Note: Deleting the depricated get_cpu_hours_2() function here. It can be recovered from commits earlier than
     #  31 Aug 2020.
     #
-    #@numba.jit
-    def get_cpu_hours_depricated(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
+    # GIT Note: Deleting depricated get_cpu_hours_depricated(). It can be restored from the current commit on 21 Sept 2020:
+    # commit 44d9c5285324859d55c7878b6d0f13bbe6576be1 (HEAD -> parallel_summary, origin/parallel_summary)
+    # Author: Mark Yoder <mark.yoder@gmail.com>
+    #Date:   Mon Sep 21 17:29:08 2020 -0700
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
+                     n_cpu=None, step_size=1000):
         '''
-        # DEPRICATION: this works, but is super memory intensive for large data sets, as per the use of vectorization and
-        #  arrays, but possibly not actually benefiting from the massive memory consumption. Replacing with a simpler,
-        #  loop-loop-like version.
+        # TODO: this in-class wrapper still needs to be tested, but since it's just a pass-through, it should work.
         #
-        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
-        #. but it should be manageable).
-        # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
-        #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
+        # a third or 4th shot at this, to get the parallelization right... again. Consider making it more procedural so we can
+        #  moved the main code out of Class scope for dev.
+        #  parallelize by splitting up jobs_summary and computing each subset over the full time-series, which we can compute,
+        #  not pass. Since we're passing jobs_summary, maybe we don't pass the index IX any longer??? maybe we maintain that for
+        # legacy.
         '''
-        #
-        # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something) 
-        #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
-        #. ARY[col][k] --> (ARY[col][0])[k]
+        n_cpu = n_cpu or self.n_cpu
+        n_cpu = n_cpu or 1
         if jobs_summary is None:
-            # this actually is not working. having problems, i think, with multiple layers of indexing. we
-            #. could try to trap this, or for now just force the calling side to handle it? I think we just have to make
-            # a copy of the data...
             jobs_summary = self.jobs_summary
-        #
-        if verbose:
-            print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
-        # NOTE: passing a None index appears to have a null effect -- just returns the whole array, but id does not.
-        #  when we pass None as an index, the columns are returned with elevated rank. aka,
-        #  (X[None])[col].shape == (1, n)
-        #  (X[col].shape == (n,)
-        #  (X[ix])[col].shape == (n,)
         if not IX is None:
             jobs_summary = jobs_summary[IX]
         #
-        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
-        if verbose:
-            print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
-        #
-        if len(jobs_summary)==0:
-            return numpy.array([], dtype=[('time', '>f8'),
-            ('t_start', '>f8'),
-            ('cpu_hours', '>f8'),
-            ('N_jobs', '>f8')])
-        #
-        # NOTE: See above discussion RE: [None] index and array column rank.
-        t_start = jobs_summary['Start']
-        #t_start = jobs_summary['Start'][0]
-        #
-        t_end = jobs_summary['End']
-        #t_end = jobs_summary['End'][0]
-        if verbose:
-            print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
-        #
-        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
-        #
-        if verbose:
-            print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
-        #
-        #
-        if t_min is None:
-            t_min = numpy.nanmin([t_start, t_end])
-        t_max = numpy.nanmax([t_start, t_end])
-        #
-        # can also create X sequence like this, for minute resolution
-        # X = numpy.arange(t_min, t_max, 1./(24*60))
-        #
-        X = numpy.linspace(t_min, t_max, n_points)
-        #
-        # in steps
-        #IX_t = numpy.array([numpy.logical_and(t_start<=t, t_end>t) for t in X])
-        if verbose:
-            print('*** debug: starting IX_k')
-        #
-        # ... blocking these out in-line would save a lot of memory too...
-        #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
-        IX_k = [numpy.where(numpy.logical_and(x>=t_start, (x-bin_size)<t_end))[0] for x in X]
-        #
-        # we dont' actually do anything with this...
-        #N_ix = numpy.array([len(rw) for rw in IX_k])
-        #
-        if verbose:
-            print('*** DEBUG: IX_K:: ', IX_k[0:5])
-            print('*** DEBUG: IX_k[0]: ', IX_k[0], type(IX_k[0]))
-        #
-        # This is the intermediate memory way to do this. We get away with it for raw data sets ~800 MB or so, but
-        #  when we get up to the 3GB sets we find for Sherlock.owners, it gets out of control and we see memory usage
-        #  peaking over 100GB... which is not ok. Turns out that simple loops can actually be faster with numba@jit compilation
-        #  so let's see if we can do that...
-        # ... but what happens if we just block this out one more level? are we taking a major memory hit from just the list comprehension?
-        cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(jx))*x, t_end[jx]], axis=0) - 
-                           numpy.max([numpy.ones(len(jx))*(x-bin_size), t_start[jx]], axis=0))*(jobs_summary['NCPUS'])[jx] )
-                           for x,jx in zip(X, IX_k) ])
-        #
-        # convert to hours:
-        cpu_h*=24.
-        #
-        if verbose:
-            print('*** ', cpu_h.shape)
-        #
-        #
-        return numpy.array([tuple(rw) for rw in numpy.array([X, X-bin_size, cpu_h, [len(rw) for rw in IX_k]]).T ], dtype=[('time', '>f8'), 
-                                                                       ('t_start', '>f8'),
-                                                                       ('cpu_hours', '>f8'),
-                                                                       ('N_jobs', '>f8')])
-    #
+        return get_cpu_hours(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, jobs_summary=jobs_summary, verbose=verbose, n_cpu=n_cpu, step_size=step_size):
     #
     #@numba.jit
-    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
+    def get_cpu_hours_depricated(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
                      n_cpu=None):
         '''
         # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
@@ -735,7 +655,7 @@ class SACCT_data_handler(object):
                     #
                     R += [P.apply_async(self.get_cpu_hours, kwds=my_inputs.copy())]
                     #
-                    res = [r.get() for r in R]
+                res = [r.get() for r in R]
                 # join()? not clear on this with a context manager..
                 #P.join()
                 #
@@ -2282,4 +2202,126 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=100000):
         print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
     #
     return jobs_summary
+#
+def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=1000):
+    '''
+    # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
+    #  intermediat/transient arrays.
+    #
+    # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
+    #. but it should be manageable).
+    # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
+    #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
+    '''
+    #
+    # stash a copy of input prams:
+    inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
+    n_cpu = (n_cpu or 1)
+    #
+    # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something)
+    #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
+    #. ARY[col][k] --> (ARY[col][0])[k]
+    if jobs_summary is None:
+        raise Exception('jobs_summary data not provided.')
+        #
+    if len(jobs_summary)==0:
+        return numpy.array([], dtype=cpuh_dtype)
+    #
+    if verbose:
+        print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
+    #
+    t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+    #print('*** shape(t_now): ', numpy.shape(t_now))
+    if verbose:
+        print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
+    #
+    cpuh_dtype = [('time', '>f8'),
+        ('t_start', '>f8'),
+        ('cpu_hours', '>f8'),
+        ('N_jobs', '>f8')]
+    #
+    t_start = jobs_summary['Start']
+    t_end = jobs_summary['End'].copy()
+    #
+    if verbose:
+        print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
+    #
+    # handle currently running jobs (do we need to copy() the data?)
+    t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+    #
+    if verbose:
+        print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
+    #
+    if t_min is None:
+        t_min = numpy.nanmin([t_start, t_end])
+    #
+    if t_max is None:
+        t_max = numpy.nanmax([t_start, t_end])
+    #
+    inputs.update({'t_min':t_min, 't_max':t_max})
+    #
+    # output container:
+    CPU_H = numpy.zeros( (n_points, ), dtype=cpuh_dtype)
+    CPU_H['time'] = numpy.linspace(t_min, t_max, n_points)
+    CPU_H['t_start'] = CPU_H['time']-bin_size
+    #
+    # recursive MPP handler:
+    #  this one is a little bit complicated by the use of linspace(a,b,n), sice linspae is inclusive for both a,b
+    #  so we have to do a trick to avoid douple-calculationg (copying) the intersections (b_k-1 = a_k)
+    if n_cpu>1:
+        #
+        # divide up jobs_summary to a bunch of processes
+        # TODO: do this with a linspace().astype(int)
+        ks = numpy.array([*numpy.arange(0, len(jobs_summary), step_size), len(jobs_summary)])
+        #
+        #
+        with mpp.Pool(n_cpu) as P:
+            R = []
+            #for k_p, (t1, t2) in enumerate(zip(t_intervals[0:-1], t_intervals[1:])):
+            for k1, k2 in zip(ks[0:-1], ks[1:]):
+                #
+                my_inputs = inputs.copy()
+                my_inputs.update({'jobs_summary':jobs_summary[k1:k2], 'n_cpu':1})
+                if verbose:
+                    print('*** my_inputs: ', my_inputs)
+                #
+                R += [P.apply_async(get_cpu_hours, kwds=my_inputs)]
+                #
+            #
+            for r in R:
+                #CPU_H[['cpu_hours', 'N_jobs']][:] += r.get()[['cpu_hours', 'N_jobs']][:]
+                CPU_H['cpu_hours'] += r.get()['cpu_hours']
+                CPU_H['N_jobs'] += r.get()['N_jobs']
+            #
+            return CPU_H
+    #
+    # SPP code:
+    #
+    if verbose:
+        print('*** ', cpu_h.shape)
+    #
+    for k,t in enumerate(CPU_H['time']):
+        # TODO: wrap this into a (@jit compiled) function to parallelize? or add a recursive block
+        #  to parralize the whole function, using an index to break it up.
+        ix_k = numpy.where(numpy.logical_and(t_start<=t, t_end>(t-bin_size) ))[0]
+        #print('*** shape(ix_k): {}//{}'.format(ix_k.shape, numpy.sum(ix_k)) )
+        #
+        N_ix = len(ix_k)
+        if N_ix==0:
+            CPU_H[k] = t, t-bin_size,0.,0.
+            continue
+        #
+        #print('** ** ', ix_k)
+        #CPU_H[k] = t, t-bin_size, numpy.sum( numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
+        #                    numpy.max([(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]]) )*24., N_ix
+        #print('*** *** ', k,t, N_ix, ix_k)
+        #
+        # TODO: this can be made faster (probably?) by basically counting all the middle elements and only dong max(), min(), and arithmetic
+        #  on the leading and trailing elemnents. But if that breaks vectorization, we'll give up those gains.
+        CPU_H[['cpu_hours', 'N_jobs']][k] = numpy.sum( (numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
+            numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] ), N_ix
+    #
+    #CPU_H['cpu_hours']*=24.
+    #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
+    return CPU_H
 #
