@@ -415,15 +415,17 @@ class SACCT_data_handler(object):
             delim = self.delim
         max_rows = max_rows or self.max_rows
         chunk_size = chunk_size or self.chunk_size
-        chunk_size = chunk_size or 100
+        chunk_size = chunk_size or 100000
         #
         n_cpu = n_cpu or self.n_cpu
-        n_cpu = n_cpu or mpp.cpu_count()
+        # mpp.cpu_count() is dangerous for HPC environments. So set to 1? Maybe hedge and guess 2 or 4 (we can hyperthread a bit)?
+        #n_cpu = n_cpu or mpp.cpu_count()
+        n_cpu = n_cpu or 1
         #
         # have not yet figured out how to make max_rows work with MPP (probably just need to load the data to an array, then process)
         #, so for now force it to SPP:
-        if not max_rows is None:
-            n_cpu = 1
+#        if not max_rows is None:
+#            n_cpu = 1
         #
         if verbose:
             print('** load_sact_data(), max_rows={}'.format(max_rows))
@@ -446,8 +448,6 @@ class SACCT_data_handler(object):
             # TODO: it would be a nice performance boost to only work through a subset of the headers...
             #active_headers = [cl for cl in headers if cl in types_dict.keys()]
             #
-            n_rws = 0
-            # 
             # TODO: reevaluate readlines() vs for rw in...
             #
             # eventually, we might need to batch this.
@@ -459,11 +459,23 @@ class SACCT_data_handler(object):
                 # TODO: how do we make this work with max_rows limit?
                 # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
                 # for the use of P.map(), using a context manager and functools.partial()
-                # TODO: use an out-of-class variation of process_row(), or modify the in-class so MPP does not need
+                # TODO: use an out-of-class variation of process_row() (or maybe the whole function), or modify the in-class so MPP does not need
                 #   to pickle over the whole object, which breaks for large data sets. tentatively, use apply_async() and just pass
                 #   headers, types_dict, and RH.
                 #   def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={})
-                results = P.map_async(self.process_row, fin, chunksize=chunk_size)
+                if max_rows is None:
+                    results = P.map_async(self.process_row, fin, chunksize=chunk_size)
+                else:
+                    # This might run into memory problems, but we'll take our chances for now.
+                    #X = [rw for k,rw in enumerate(fin) if k<max_rows]
+                    # it's a bit faster to chunk these reads together (but probably not a major factor)
+                    # Note that using readlines() will usually give > max_rows (one iteration's overage)
+                    data_subset = []
+                    while len(data_subset)<max_rows:
+                        data_subset += fin.readlines(chunk_size)
+                    #
+                    results = P.map_async(self.process_row, data_subset[0:max_rows], chunksize=chunk_size)
+                #
                 P.close()
                 P.join()
                 data = results.get()
@@ -472,49 +484,23 @@ class SACCT_data_handler(object):
                 del P
             else:
                 #
+                # TODO: consider chunking this to improve speed (by making better use of cache?).
                 data = [self.process_row(rw) for k,rw in enumerate(fin) if (max_rows is None or k<max_rows) ]
-            #
-            #all_the_data = fin.readlines(max_rows)
-            #
-#             data = []
-#             #for j,rw in enumerate(fin):
-#             for j,rw in enumerate(all_the_data[0:(len(all_the_data) or max_rows)]):
-#                 #
-#                 if rw[0:10] == headers_rw[0:10]:
-#                     continue
-#                 #
-#                 #n_rws += 1
-#                 ##if not (max_rows is None or max_rows<0) and j>max_rows:
-#                 #if not (max_rows is None or max_rows<0) and n_rws>max_rows:
-#                 #    break
-
-#                 #print('*** DEBUG: ', rw)
-#                 data += [rw.split(delim)[:-1]]
-#                 #print('* * DEBUG: ', data[-1])
-#                 #
-#                 data[-1] = [None if vl=='' else types_dict.get(col,str)(vl)
-#                     for k,(col,vl) in enumerate(zip(active_headers, data[-1]))]
-#                 ##for k, (col,vl) in enumerate(zip(headers, data[-1])):
-#                 #for k, (col,vl) in enumerate(zip(active_headers, data[-1])):
-#                 #    #print('j,k [{}:{}]: {}, {}'.format(col,vl, j,k))
-#                 #    #data[-1][k]=types_dict[col](vl)
-#                 #    data[-1][k]=types_dict.get(col, str)(vl)
-#                 #
-                #
-            #
+        #
+        #
 #            del all_the_data, rw, k, cvol, vl
-            #
-            if verbose:
-                print('** len: ', len(data))
-                self.raw_data_len = len(data)
-            #
-            #self.data=data
-            # TODO: asrecarray()?
-            #self.data = pandas.DataFrame(data, columns=active_headers).to_records()
-            #return data
-            #
-            # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
-            return pandas.DataFrame(data, columns=active_headers).to_records()
+        #
+        if verbose:
+            print('** load_sacct_data::len: ', len(data))
+            self.raw_data_len = len(data)
+        #
+        #self.data=data
+        # TODO: asrecarray()?
+        #self.data = pandas.DataFrame(data, columns=active_headers).to_records()
+        #return data
+        #
+        # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
+        return pandas.DataFrame(data, columns=active_headers).to_records()
         #
     @numba.jit
     def process_row(self, rw):
@@ -709,8 +695,38 @@ class SACCT_data_handler(object):
         #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
         return CPU_H
     #
-    #@numba.jit
     def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
+        '''
+        ##
+        # Use out-of-class procedural function to improve parallelization (or at least development of parallel code).
+        #  this class function will just be a wrapper and will retain some of the default variable handlers.
+        #
+        # @n_points: number of points in returned time series.
+        # @bin_size: size of bins. This will override n_points
+        # @t_min: start time (aka, bin phase).
+        # @ix: an index, aka user=my_user
+        '''
+        if verbose is None:
+            verbose = self.verbose
+        #
+        mpp_chunksize = mpp_chunksize or self.chunk_size
+        n_cpu = n_cpu or self.n_cpu
+        #
+        if (not ix is None) and len(ix)==0:
+            #return numpy.array([(0.),(0.),(0.)], dtype=[('time', '>f8'),
+            #return numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
+            return null_return()
+        #
+        if jobs_summary is None:
+            jobs_summary=self.jobs_summary
+        if not ix is None:
+            jobs_summary=jobs_summary[ix]
+        #
+        return active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu, jobs_summary=jobs_summary,
+            verbose=verbose, mpp_chunksize=mpp_chunksize)
+    #
+    #@numba.jit
+    def active_jobs_cpu_DEPRICATED(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
         '''
         # DEPRICATION: moving the functional code out of the class, principally to better facilitate development.
         #
@@ -2085,7 +2101,7 @@ def fix_to_ascii(s):
     #
     return out_str
     
-def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=100000):
+def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     '''
     # compute jobs summary from (raw)data
     # @n_cpu: number of comutational elements (CPUs or processors)
@@ -2215,7 +2231,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=100000):
     #
     return jobs_summary
 #
-def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=1000):
+def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=10000):
     '''
     # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
     #  intermediat/transient arrays.
