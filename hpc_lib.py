@@ -344,6 +344,8 @@ class SACCT_data_handler(object):
             if verbose:
                 print('*** headers_rw: ', headers_rw)
             #headers = headers_rw[:-1].split(delim)[:-1]
+            #TODO: FIXME: Shouldn't (or couldn't) this just be headers_rw[:-2].split(delim) + [] ?? . i think we're
+            #. filtering off a "|\n" sequence. or we could just skip the first [:-1]
             headers = headers_rw[:-1].split(delim)[:-1] + ['JobID_parent']
             self.headers = headers
             #
