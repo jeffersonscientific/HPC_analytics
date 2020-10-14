@@ -313,6 +313,9 @@ class SACCT_data_handler(object):
             jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
             jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
             #
+            # aggregate on NTasks? The first row should be NTasks for the submitted job
+            #jobs_summary[k]['NTasks'] = numpy.nanmax(sub_data['NTasks'])
+            #
             # move this into the loop. weird things can happen with buffers...
             del sub_data
         #
