@@ -2028,6 +2028,8 @@ def array_to_hdf5_dataset(input_array, dataset_name, output_fname='outfile.h5', 
 #
     with h5py.File(output_fname, h5_mode) as fout:
         #fout.create_dataset('jobs_summary', data=sacct_obj.jobs_summary,
+        # TODO: try the syntax like:
+        # dataset[...] = some_2d_array
         #                    dtype=new_dtype)
         #
         # this works, but seems clumsy...
