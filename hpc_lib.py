@@ -2130,6 +2130,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #print('*** *** ks_initial: ', ks)
         #
         # TODO: some sorting...
+        # Adjust partitions to keep jobs together.
         for j,k in enumerate(ks[1:-1]):
             #print('*** k_in: ', k)
             while working_data['JobID_parent'][k] == working_data['JobID_parent'][k-1]:
