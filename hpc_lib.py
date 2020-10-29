@@ -1215,6 +1215,90 @@ class SACCT_data_handler(object):
         #
         return {'cpu_hourly':cpu_hourly, 'jobs_hourly':jobs_hourly, 'cpu_weekly':cpu_weekly, 'jobs_weekly':jobs_weekly}
 
+class SACCT_data_direct(SACCT_data_handler):
+    format_list_default = ['User', 'Group', 'GID', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
+               'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
+               'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqGRES', 'AllocGRES', 'ReqTRES',
+               'AllocTRES']
+    def __init__(self, group=None, partition=None, delimiter='|', start_date=None, end_date=None, more_options=[], delta_t_days=30,
+        format_list=None, verbose=0):
+        #
+        self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
+        options = [tuple(rw) if len(rw)>=2 else (rw,None) for rw in more_options]
+        #
+        format_list = format_list or format_list_default
+        format_string = ','.join(format_list)
+        #
+        if not group is None:
+            options += [('group', group)]
+        if not partition is None:
+            options += [('partition', partition)]
+        #
+        try:
+            delta_t_days=int(delta_t_days)
+        except:
+            delta_t_days=30
+            if verbose:
+                print('** Warning: delta_t_days input not valid. set to default value={}'.format(delta_t_days))
+            #
+        #
+        options += [('delimiter', '"{}"'.format(delimiter))]
+        
+        #
+        # process start_/end_date
+        if isinstance(start_date, str):
+            start_date = str2date(start_date)
+        if instance(end_date, str):
+            end_date = str2date(end_date)
+        #
+        start_end_times = [(start_date, min(start_date + dtm.timedelta(days=delta_t_days), end_date))]
+        while start_end_times[-1][1] < end_time:
+            start_end_times += [[start_end_times[-1][1], min(start_end_times[-1][1] + dtm.timedelta(days=30), end_date) ]]
+        #
+        for (op,vl) in options:
+            if vl is None:
+                options_str += '--{}'.format(op)
+            else:
+                options_str += ' --{}={} '.format(op,vl)
+            #
+        #
+        self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
+        #
+        data = self.load_sacct_data()
+    def load_sacct_data(self, n_cpu=None):
+        #
+        n_cpu = n_cpu or self.n_cpu
+        n_cpu = n_cpu or 4
+        #
+        sacct_output = ''
+        for k, (start, stop) in enumerate(start_end_times):
+            sacct_str = 'srun sacct {} {} -p --starttime={} --endtime={} --format={} '.format( ('--noheader' if k>0 else ''),
+                                    options_str, start, stop, format_string )
+            #
+            #sacct_str_list = sacct_str.split()
+            print('** [{}]: {}\n'.format(k, sacct_str))
+            #
+            #S = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE)
+            # TODO: parallelize...
+            
+            sacct_out += subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode()
+        #
+        self.jobs_summary=self.calc_jobs_summary(sacct_out)
+#
+    def get_and_process_sacct_data(self, sacct_str, max_rows=None, delim=None):
+        delim = if delim is None:
+            delim = self.delim
+        if delim is None:
+            delim = '|'
+        #
+        sacct_output = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode()
+        headers = sacct_output[0][:-1].split(delim)[:-1] + ['JobID_parent']
+        RH = {h:k for k,h in enumerate(headers)}
+        #
+        data = [self.process_row(rw) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) ]
+        # pandas.DataFrame(data, columns=active_headers).to_records()
+
+        #
     
 class SACCT_data_from_h5(SACCT_data_handler):
     # a SACCT_data handler that loads input file(s). Most of the time, we don't need the primary
