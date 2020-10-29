@@ -160,6 +160,8 @@ class SACCT_data_handler(object):
         #  anything we're doing right now. if it comes to it, maybe we dump it as an HDF5 or actually build a DB of some sort.
         '''
         #
+        n_cpu = n_cpu or 1
+        #
         if types_dict is None:
             #
             # handle all of the dates the same way. datetimes or numbers? numbers are easier for most
@@ -275,18 +277,102 @@ class SACCT_data_handler(object):
         #
         return None
     #
-    def calc_jobs_summary(self, data=None, verbose=None):
+    def calc_jobs_summary(self, data=None, verbose=None, n_cpu=None, step_size=100000):
         '''
         # compute jobs summary from (raw)data
+        # @n_cpu: number of comutational elements (CPUs or processors)
+        # @step_size: numer of rows per thread (-like chunks). We'll use a Pool() (probably -- or something) to do the computation. use this
+        #   variable to break up the job into n>n_cpu jobs, so we don't get a "too big to pickle" error. we'll also need to put in a little
+        #  intelligence to e sure the steps are not too small, all distinct job_ids are represented, etc.
         '''
+        #
         if data is None: data = self.data
         if verbose is None: verbose=self.verbose
         #
-        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+        # I think the "nonelike" syntax is actually favorable here:
+        n_cpu = (n_cpu or self.n_cpu)
+        n_cpu = (n_cpu or 1)
         #
-        # NOTE: this can be a lot of string type data, so being efficient with string parsing makes a difference...
+        if verbose:
+            print('*** calc_jobs_summary: with prams: len(data)={}, verbose={}, n_cpu={}, step_size={}'.format(len(data), verbose, n_cpu, step_size))
+        #
+        return calc_jobs_summary(data=data, verbose=verbose, n_cpu=n_cpu, step_size=step_size)
+        #
+    def calc_jobs_summary_depricated(self, data=None, verbose=None, n_cpu=None, step_size=100000):
+        '''
+        # DEPRICATION WARNING: This function is deprecated and has been replaced by a class function that simply calls a procedural function by the same
+        #  (original) name. This is to better facilitate parallelization, and particulalry development with parallelization (otherwise, everytime we make
+        #  a change, we have to recompute the whole object).
+        # compute jobs summary from (raw)data
+        # @n_cpu: number of comutational elements (CPUs or processors)
+        # @step_size: numer of rows per thread (-like chunks). We'll use a Pool() (probably -- or something) to do the computation. use this
+        #   variable to break up the job into n>n_cpu jobs, so we don't get a "too big to pickle" error. we'll also need to put in a little
+        #  intelligence to e sure the steps are not too small, all distinct job_ids are represented, etc.
+        '''
+        # TODO: To (maybe) improve parallelization, move this out of class to a procedure, so the in-class version just passes class-scope variables.
+        #  Question: if the function is in-class, does MPP pickle the whole class to processes, or just the required data? if the latter, we don't really
+        #  need to remove it from the class, except that it can make working with older pickled objects difficult. but since we're introducing HDF5, we won't
+        #  be pickling any longer, so...
+        #
+        if data is None: data = self.data
+        if verbose is None: verbose=self.verbose
+        #
+        # I think the "nonelike" syntax is actually favorable here:
+        n_cpu = (n_cpu or self.n_cpu)
+        n_cpu = (n_cpu or 1)
+        #
+        # let's sort here:
+        # NOTE: with this sorted, we can maybe be smarter about finding the groups as well, though I think the improvement will not be extraordinary, since the indices
+        #  end up being sorted and locally grouped anyway. maybe ends up saving a pass or two through the data, but I think the string operations are the ugly bit.
+        # axis=0?
+        # having some trouble with None types in the sort, but not because there are actually None types in the data -- something with the sorting algorithm.
+        #  let's try (for now) specifying the axis (necessary for an indexed array, with order=[] specified???), and the kind variable. getting some conflicting outcomes
+        #  on testing (like worked, then didn't, then what did not work now works... so this might need some sorting (ha, ha!) out. ideally we can use kind=quicksort
+        #data.sort(axis=0, order=['JobID', 'Submit'], kind='stable')
+        #
+        #
+        # we might want to put some of the preliminary work up front to the initial SPP handling.
+        #  For example, filtering out the .batch or .extern jobs early could help with load balancing. but for now,
+        #   push everything to processes (with a little p)
+        if n_cpu > 1:
+            data.sort(axis=0, order=['JobID', 'Submit'], kind='stable')
+            ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
+            #
+            # TODO: some sorting...
+            for j,k in enumerate(ks[1:-1]):
+                while data['JobID'][k] == data['JobID'][k-1]:
+                    k+=1
+                ks[j] = k
+            ks = numpy.unique(ks)
+            
+            ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+            N = len(numpy.unique([s[0:(s+'.').index('.')] for s in data['JobID'][ix_user_jobs] ]) )
+            Jobs_summ_mpp = numpy.array(numpy.zeros(shape=(N, )), dtype=data.dtype)
+            #
+            # ks should be a list of indices between 0 and len+1. This process still needs a little bit of work
+            #  to guarantee subsets are not too long/short, etc. but this much should work
+            #
+            n_cpu = min(n_cpu, len(ks)-1)
+            #
+            with mpp.Pool(n_cpu) as P:
+                R = [P.apply_async(self.calc_jobs_summary, kwds={'data':data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) ]
+                #res = [r.get() for r in R]
+                for (r, k1,k2) in zip(R,ks[0:-1], ks[1:] ) :
+                    jobs_summary[k1:k2]=r.get()[:]
+                #
+            #
+            return jobs_summary
+        #
+        # Single-process code:
+        #
+        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+        # how do we do a distributed string operation in a numpy.array()?
+        #ix_user_jobs = numpy.invert(numpy.logical_or())
+        #
         job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
                                                     for s in data['JobID'][ix_user_jobs] ])}
+        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+
         #
         #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
         for k,s in enumerate(data['JobID_parent']):
@@ -295,7 +381,7 @@ class SACCT_data_handler(object):
         if verbose:
             print('Starting jobs_summary...')
         # we should be able to MPP this as well...
-        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+        #jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
         t_now = mpd.date2num(dtm.datetime.now())
         for k, (j_id, ks) in enumerate(job_ID_index.items()):
             jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
@@ -336,10 +422,17 @@ class SACCT_data_handler(object):
             delim = self.delim
         max_rows = max_rows or self.max_rows
         chunk_size = chunk_size or self.chunk_size
-        chunk_size = chunk_size or 100
+        chunk_size = chunk_size or 100000
         #
         n_cpu = n_cpu or self.n_cpu
-        n_cpu = n_cpu or mpp.cpu_count()
+        # mpp.cpu_count() is dangerous for HPC environments. So set to 1? Maybe hedge and guess 2 or 4 (we can hyperthread a bit)?
+        #n_cpu = n_cpu or mpp.cpu_count()
+        n_cpu = n_cpu or 1
+        #
+        # have not yet figured out how to make max_rows work with MPP (probably just need to load the data to an array, then process)
+        #, so for now force it to SPP:
+#        if not max_rows is None:
+#            n_cpu = 1
         #
         if verbose:
             print('** load_sact_data(), max_rows={}'.format(max_rows))
@@ -362,8 +455,6 @@ class SACCT_data_handler(object):
             # TODO: it would be a nice performance boost to only work through a subset of the headers...
             #active_headers = [cl for cl in headers if cl in types_dict.keys()]
             #
-            n_rws = 0
-            # 
             # TODO: reevaluate readlines() vs for rw in...
             #
             # eventually, we might need to batch this.
@@ -375,11 +466,23 @@ class SACCT_data_handler(object):
                 # TODO: how do we make this work with max_rows limit?
                 # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
                 # for the use of P.map(), using a context manager and functools.partial()
-                # TODO: use an out-of-class variation of process_row(), or modify the in-class so MPP does not need
+                # TODO: use an out-of-class variation of process_row() (or maybe the whole function), or modify the in-class so MPP does not need
                 #   to pickle over the whole object, which breaks for large data sets. tentatively, use apply_async() and just pass
                 #   headers, types_dict, and RH.
                 #   def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={})
-                results = P.map_async(self.process_row, fin, chunksize=chunk_size)
+                if max_rows is None:
+                    results = P.map_async(self.process_row, fin, chunksize=chunk_size)
+                else:
+                    # This might run into memory problems, but we'll take our chances for now.
+                    #X = [rw for k,rw in enumerate(fin) if k<max_rows]
+                    # it's a bit faster to chunk these reads together (but probably not a major factor)
+                    # Note that using readlines() will usually give > max_rows (one iteration's overage)
+                    data_subset = []
+                    while len(data_subset)<max_rows:
+                        data_subset += fin.readlines(chunk_size)
+                    #
+                    results = P.map_async(self.process_row, data_subset[0:max_rows], chunksize=chunk_size)
+                #
                 P.close()
                 P.join()
                 data = results.get()
@@ -388,49 +491,23 @@ class SACCT_data_handler(object):
                 del P
             else:
                 #
+                # TODO: consider chunking this to improve speed (by making better use of cache?).
                 data = [self.process_row(rw) for k,rw in enumerate(fin) if (max_rows is None or k<max_rows) ]
-            #
-            #all_the_data = fin.readlines(max_rows)
-            #
-#             data = []
-#             #for j,rw in enumerate(fin):
-#             for j,rw in enumerate(all_the_data[0:(len(all_the_data) or max_rows)]):
-#                 #
-#                 if rw[0:10] == headers_rw[0:10]:
-#                     continue
-#                 #
-#                 #n_rws += 1
-#                 ##if not (max_rows is None or max_rows<0) and j>max_rows:
-#                 #if not (max_rows is None or max_rows<0) and n_rws>max_rows:
-#                 #    break
-
-#                 #print('*** DEBUG: ', rw)
-#                 data += [rw.split(delim)[:-1]]
-#                 #print('* * DEBUG: ', data[-1])
-#                 #
-#                 data[-1] = [None if vl=='' else types_dict.get(col,str)(vl)
-#                     for k,(col,vl) in enumerate(zip(active_headers, data[-1]))]
-#                 ##for k, (col,vl) in enumerate(zip(headers, data[-1])):
-#                 #for k, (col,vl) in enumerate(zip(active_headers, data[-1])):
-#                 #    #print('j,k [{}:{}]: {}, {}'.format(col,vl, j,k))
-#                 #    #data[-1][k]=types_dict[col](vl)
-#                 #    data[-1][k]=types_dict.get(col, str)(vl)
-#                 #
-                #
-            #
+        #
+        #
 #            del all_the_data, rw, k, cvol, vl
-            #
-            if verbose:
-                print('** len: ', len(data))
-                self.raw_data_len = len(data)
-            #
-            #self.data=data
-            # TODO: asrecarray()?
-            #self.data = pandas.DataFrame(data, columns=active_headers).to_records()
-            #return data
-            #
-            # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
-            return pandas.DataFrame(data, columns=active_headers).to_records()
+        #
+        if verbose:
+            print('** load_sacct_data::len: ', len(data))
+            self.raw_data_len = len(data)
+        #
+        #self.data=data
+        # TODO: asrecarray()?
+        #self.data = pandas.DataFrame(data, columns=active_headers).to_records()
+        #return data
+        #
+        # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
+        return pandas.DataFrame(data, columns=active_headers).to_records()
         #
     @numba.jit
     def process_row(self, rw):
@@ -448,112 +525,32 @@ class SACCT_data_handler(object):
     # GIT Note: Deleting the depricated get_cpu_hours_2() function here. It can be recovered from commits earlier than
     #  31 Aug 2020.
     #
-    #@numba.jit
-    def get_cpu_hours_depricated(self, n_points=10000, bin_size=7., IX=None, t_min=None, jobs_summary=None, verbose=False):
+    # GIT Note: Deleting depricated get_cpu_hours_depricated(). It can be restored from the current commit on 21 Sept 2020:
+    # commit 44d9c5285324859d55c7878b6d0f13bbe6576be1 (HEAD -> parallel_summary, origin/parallel_summary)
+    # Author: Mark Yoder <mark.yoder@gmail.com>
+    #Date:   Mon Sep 21 17:29:08 2020 -0700
+    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
+                     n_cpu=None, step_size=1000):
         '''
-        # DEPRICATION: this works, but is super memory intensive for large data sets, as per the use of vectorization and
-        #  arrays, but possibly not actually benefiting from the massive memory consumption. Replacing with a simpler,
-        #  loop-loop-like version.
+        # TODO: this in-class wrapper still needs to be tested, but since it's just a pass-through, it should work.
         #
-        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
-        #. but it should be manageable).
-        # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
-        #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
+        # a third or 4th shot at this, to get the parallelization right... again. Consider making it more procedural so we can
+        #  moved the main code out of Class scope for dev.
+        #  parallelize by splitting up jobs_summary and computing each subset over the full time-series, which we can compute,
+        #  not pass. Since we're passing jobs_summary, maybe we don't pass the index IX any longer??? maybe we maintain that for
+        # legacy.
         '''
-        #
-        # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something) 
-        #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
-        #. ARY[col][k] --> (ARY[col][0])[k]
+        n_cpu = n_cpu or self.n_cpu
+        n_cpu = n_cpu or 1
         if jobs_summary is None:
-            # this actually is not working. having problems, i think, with multiple layers of indexing. we
-            #. could try to trap this, or for now just force the calling side to handle it? I think we just have to make
-            # a copy of the data...
             jobs_summary = self.jobs_summary
-        #
-        if verbose:
-            print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
-        # NOTE: passing a None index appears to have a null effect -- just returns the whole array, but id does not.
-        #  when we pass None as an index, the columns are returned with elevated rank. aka,
-        #  (X[None])[col].shape == (1, n)
-        #  (X[col].shape == (n,)
-        #  (X[ix])[col].shape == (n,)
         if not IX is None:
             jobs_summary = jobs_summary[IX]
         #
-        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
-        if verbose:
-            print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
-        #
-        if len(jobs_summary)==0:
-            return numpy.array([], dtype=[('time', '>f8'),
-            ('t_start', '>f8'),
-            ('cpu_hours', '>f8'),
-            ('N_jobs', '>f8')])
-        #
-        # NOTE: See above discussion RE: [None] index and array column rank.
-        t_start = jobs_summary['Start']
-        #t_start = jobs_summary['Start'][0]
-        #
-        t_end = jobs_summary['End']
-        #t_end = jobs_summary['End'][0]
-        if verbose:
-            print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
-        #
-        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
-        #
-        if verbose:
-            print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
-        #
-        #
-        if t_min is None:
-            t_min = numpy.nanmin([t_start, t_end])
-        t_max = numpy.nanmax([t_start, t_end])
-        #
-        # can also create X sequence like this, for minute resolution
-        # X = numpy.arange(t_min, t_max, 1./(24*60))
-        #
-        X = numpy.linspace(t_min, t_max, n_points)
-        #
-        # in steps
-        #IX_t = numpy.array([numpy.logical_and(t_start<=t, t_end>t) for t in X])
-        if verbose:
-            print('*** debug: starting IX_k')
-        #
-        # ... blocking these out in-line would save a lot of memory too...
-        #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
-        IX_k = [numpy.where(numpy.logical_and(x>=t_start, (x-bin_size)<t_end))[0] for x in X]
-        #
-        # we dont' actually do anything with this...
-        #N_ix = numpy.array([len(rw) for rw in IX_k])
-        #
-        if verbose:
-            print('*** DEBUG: IX_K:: ', IX_k[0:5])
-            print('*** DEBUG: IX_k[0]: ', IX_k[0], type(IX_k[0]))
-        #
-        # This is the intermediate memory way to do this. We get away with it for raw data sets ~800 MB or so, but
-        #  when we get up to the 3GB sets we find for Sherlock.owners, it gets out of control and we see memory usage
-        #  peaking over 100GB... which is not ok. Turns out that simple loops can actually be faster with numba@jit compilation
-        #  so let's see if we can do that...
-        # ... but what happens if we just block this out one more level? are we taking a major memory hit from just the list comprehension?
-        cpu_h = numpy.array([numpy.sum( (numpy.min([numpy.ones(len(jx))*x, t_end[jx]], axis=0) - 
-                           numpy.max([numpy.ones(len(jx))*(x-bin_size), t_start[jx]], axis=0))*(jobs_summary['NCPUS'])[jx] )
-                           for x,jx in zip(X, IX_k) ])
-        #
-        # convert to hours:
-        cpu_h*=24.
-        #
-        if verbose:
-            print('*** ', cpu_h.shape)
-        #
-        #
-        return numpy.array([tuple(rw) for rw in numpy.array([X, X-bin_size, cpu_h, [len(rw) for rw in IX_k]]).T ], dtype=[('time', '>f8'), 
-                                                                       ('t_start', '>f8'),
-                                                                       ('cpu_hours', '>f8'),
-                                                                       ('N_jobs', '>f8')])
-    #
+        return get_cpu_hours(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, jobs_summary=jobs_summary, verbose=verbose, n_cpu=n_cpu, step_size=step_size)
     #
     #@numba.jit
-    def get_cpu_hours(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
+    def get_cpu_hours_depricated(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
                      n_cpu=None):
         '''
         # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
@@ -655,7 +652,7 @@ class SACCT_data_handler(object):
                     #
                     R += [P.apply_async(self.get_cpu_hours, kwds=my_inputs.copy())]
                     #
-                    res = [r.get() for r in R]
+                res = [r.get() for r in R]
                 # join()? not clear on this with a context manager..
                 #P.join()
                 #
@@ -705,9 +702,42 @@ class SACCT_data_handler(object):
         #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
         return CPU_H
     #
-    #@numba.jit
     def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
         '''
+        ##
+        # Use out-of-class procedural function to improve parallelization (or at least development of parallel code).
+        #  this class function will just be a wrapper and will retain some of the default variable handlers.
+        #
+        # @n_points: number of points in returned time series.
+        # @bin_size: size of bins. This will override n_points
+        # @t_min: start time (aka, bin phase).
+        # @ix: an index, aka user=my_user
+        '''
+        if verbose is None:
+            verbose = self.verbose
+        #
+        mpp_chunksize = mpp_chunksize or self.chunk_size
+        n_cpu = n_cpu or self.n_cpu
+        #
+        if (not ix is None) and len(ix)==0:
+            #return numpy.array([(0.),(0.),(0.)], dtype=[('time', '>f8'),
+            #return numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
+            return null_return()
+        #
+        if jobs_summary is None:
+            jobs_summary=self.jobs_summary
+        if not ix is None:
+            jobs_summary=jobs_summary[ix]
+        #
+        return active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu, jobs_summary=jobs_summary,
+            verbose=verbose, mpp_chunksize=mpp_chunksize)
+    #
+    #@numba.jit
+    def active_jobs_cpu_DEPRICATED(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
+        '''
+        # DEPRICATION: moving the functional code out of the class, principally to better facilitate development.
+        #
+        # TODO: assess parallel strategy; maybe adjust chunksize to avoid too-big-to-parallel problems.
         # @n_points: number of points in returned time series.
         # @bin_size: size of bins. This will override n_points
         # @t_min: start time (aka, bin phase).
@@ -773,20 +803,6 @@ class SACCT_data_handler(object):
                     ('N_cpu', '>f8')])
         output['time'] = numpy.linspace(t_min, t_max, n_points)
         #
-#        if bin_size is None:
-#            #X = numpy.linspace(t_min, t_max, n_points)
-#            output = numpy.zeros( n_points, dtype=[('time', '>f8'),
-#                                                    ('N_jobs', '>f8'),
-#                                                    ('N_cpu', '>f8')])
-#            output['time'] = numpy.linspace(t_min, t_max, n_points)
-#        else:
-#            X = numpy.arange(t_min, t_max, bin_size)
-#            output = numpy.zeros( len(X), dtype=[('time', '>f8'),
-#                                                ('N_jobs', '>f8'),
-#                                                ('N_cpu', '>f8')])
-#            output['time'] = X
-#            del X
-#        #
         #Ns = numpy.zeros(len(X))
         #Ns_cpu = numpy.zeros(len(X))
         #
@@ -837,9 +853,13 @@ class SACCT_data_handler(object):
                 # need to break this into small enough chunks to not break the pickle() indexing.
                 n_procs = min(numpy.ceil(len(t_start)/n_cpu).astype(int), numpy.ceil(len(t_start)/mpp_chunksize).astype(int) )
                 ks_r = numpy.linspace(0, len(t_start), n_procs+1).astype(int)
+                #
+                # Another approach to making ks_r
+                #ks_r = numpy.array([*numpy.arange(0, len(t_start), mpp_chunksize), len(t_start)])
                 #print('*** DEBUG: KS_R: ', ks_r)
                 #
-                #ks_r = numpy.linspace(t_min, t_max, n_cpu).astype(int)
+                # TODO: as it turns out, using this outsourcing function, self.process_ajc_row_2() is not really a very good way to do this.
+                #   We'd be better off coding the algorithm inline and doing a pseudo-recurisve parallelization.
                 results = [P.apply_async(self.process_ajc_row_2,  kwds={'t':output['time'], 't_start':t_start[k1:k2],
                             't_end':t_end[k1:k2], 'NCPUs':jobs_summary['NCPUS'][k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
                 #
@@ -851,6 +871,9 @@ class SACCT_data_handler(object):
             # TODO: how do we numpy.sum(R) on the proper axis?
             for k_r, (r_nj, r_ncpu) in enumerate(R):
                 #print('**** [{}]: {} ** {}'.format(k_r, r_nj[0:10], r_ncpu[0:10]))
+                # TODO: There is a syntax to do this in one statement. Also, is there an advantage (or problem with async calculation) to do
+                #  the loop like for k_r, (r_nj, r_ncpu) in enumerate([r.get() for r in results]): ???
+                #  still not sure how the blovcking works when using the context manager and apply_async()
                 output['N_jobs'] += numpy.array(r_nj)
                 output['N_cpu']  += numpy.array(r_ncpu)
             #
@@ -860,7 +883,8 @@ class SACCT_data_handler(object):
 
     #
     def process_ajc_row_2(self, t, t_start, t_end, NCPUs):
-        
+        # DEPRICATION: moving this outside the class definition to better facilitate MPP and development.
+        #
         #print('*** DEBUG: {} ** {}'.format(len(t_start), len(t_end)))
         ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
         #
@@ -874,6 +898,7 @@ class SACCT_data_handler(object):
     @numba.jit
     #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
     def process_ajc_row(self, t):
+        # DEPRICATION: moving this outside the class definition to better facilitate MPP and development.
         #print('*** DEBUG: t:: {}'.format(t) )
         ix_t = numpy.where(numpy.logical_and(self.t_start<=t, self.t_end>t))[0]
         #output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
@@ -2168,5 +2193,406 @@ def fix_to_ascii(s):
     # but let's see if it will be necessary, or if there's a smarter way to do it.
     #
     return out_str
+    
+def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
+    '''
+    # compute jobs summary from (raw)data
+    # @n_cpu: number of comutational elements (CPUs or processors)
+    # @step_size: numer of rows per thread (-like chunks). We'll use a Pool() (probably -- or something) to do the computation. use this
+    #   variable to break up the job into n>n_cpu jobs, so we don't get a "too big to pickle" error. we'll also need to put in a little
+    #  intelligence to e sure the steps are not too small, all distinct job_ids are represented, etc.
+    '''
+    #
+    #
+    if data is None:
+        raise Exception('No data provided.')
+    #
+    n_cpu = (n_cpu or 1)
+    if verbose:
+        print('*** computing jobs_summary func on {} cpu'.format(n_cpu))
+    #
+    if n_cpu > 1:
+        # this should sort in place, which could cause problems downstream, so let's use an index:
+        ix_s = numpy.argsort(data, axis=0, order=['JobID', 'Submit'], kind='stable')
+        #
+        working_data = data[ix_s]
+        working_data.sort(axis=0, order=['JobID', 'Submit'], kind='stable')
+        #
+        #ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
+        ks = numpy.array([*numpy.arange(0, len(data), step_size), len(data)+1])
+        #print('*** *** ks_initial: ', ks)
+        #
+        # TODO: some sorting...
+        # Adjust partitions to keep jobs together.
+        for j,k in enumerate(ks[1:-1]):
+            #print('*** k_in: ', k)
+            while working_data['JobID_parent'][k] == working_data['JobID_parent'][k-1]:
+                #print('** ** ', working_data['JobID_parent'][k], working_data['JobID_parent'][k-1])
+                k+=1
+            ks[j+1] = k
+            #print('*** k_out: {}/{}'.format(k, ks[j]))
+        ks = numpy.unique(ks)
+        if verbose:
+            print('** calc_summary:: ks: {}'.format(ks))
         
-        
+        #ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+        N = len(numpy.unique(data['JobID_parent']) )
+        jobs_summary = numpy.zeros( (N, ), dtype=data.dtype)
+        #
+        # ks should be a list of indices between 0 and len+1. This process still needs a little bit of work
+        #  to guarantee subsets are not too long/short, etc. but this much should work
+        #
+        n_cpu = min(n_cpu, len(ks)-1)
+        #
+        # Traditional open(), close(), join() syntax here. This gives the same performance as the context handler syntax, though the cpu monitor behaves
+        #  very differently -- at least on a Mac. The context manager seems to confuse OS-X perception of user vs system use, and a couple other things too.
+        #P = mpp.Pool(n_cpu)
+        #R = [P.apply_async(calc_jobs_summary, kwds={'data':working_data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) ]
+        #P.close()
+        #P.join()
+        #results = [r.get() for r in R]
+        #
+        with mpp.Pool(n_cpu) as P:
+            R = [P.apply_async(calc_jobs_summary, kwds={'data':working_data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) ]
+            #
+            results = [r.get() for r in R]
+            if verbose:
+                print('*** calc_jobs_summary: results [r.get() ] list set.')
+        k=0
+        for xx in results:
+            #xx = r.get()
+            dk=len(xx)
+            #
+            jobs_summary[k:k+dk]=xx
+            k += dk
+            #
+            del xx
+                    
+            #
+        #
+        return jobs_summary
+    #
+    # Single-process code:
+    #
+    ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+    # how do we do a distributed string operation in a numpy.array()?
+    #ix_user_jobs = numpy.invert(numpy.logical_or())
+    #
+    # It looks like this was an expensive way to compute data['JobID_parent'], before we knew about _parent. This should save us some compute time!
+    #job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
+    #                                            for s in data['JobID'][ix_user_jobs] ])}
+    job_ID_index = {ss:[] for ss in numpy.unique( data['JobID_parent'] )}
+    #
+    #jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+    jobs_summary = numpy.zeros( shape=(len(job_ID_index), ), dtype=data.dtype)
+    #
+    #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
+    for k,s in enumerate(data['JobID_parent']):
+        job_ID_index[s] += [k]
+    #
+    if verbose:
+        print('Starting jobs_summary...')
+    # we should be able to MPP this as well...
+    #jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
+    t_now = mpd.date2num(dtm.datetime.now())
+    for k, (j_id, ks) in enumerate(job_ID_index.items()):
+        if len(ks)==0:
+            print('*** no ks: {}, {}'.format(j_id, ks))
+        jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
+        #
+        # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
+        #  use their index position, rather than min()/max()... but we'd need to be more careful about
+        #. that sorting step, and upstream dependencies are dangerous...
+        # NOTE: might be faster to index eact record, aka, skip sub_data and for each just,
+        #. {stuff} = max(data['End'][ks])
+        #
+        # use a buffer
+        sub_data = data[sorted(ks)]
+        #
+#        jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
+#        jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
+#        jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
+#        jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
+        #
+        # This is the proper syntax (not forgiving) to assign a row:
+        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes']][k] = numpy.nanmax(sub_data['End']), numpy.nanmin(sub_data['Start']), numpy.max(sub_data['NCPUS']), numpy.max(sub_data['NNodes'])
+        #
+        # move this into the loop. weird things can happen with buffers...
+        del sub_data
+    #
+    if verbose:
+        print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
+    #
+    return jobs_summary
+#
+def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=10000):
+    '''
+    # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
+    #  intermediat/transient arrays.
+    #
+    # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
+    #. but it should be manageable).
+    # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
+    #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
+    '''
+    #
+    # stash a copy of input prams:
+    inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
+    n_cpu = (n_cpu or 1)
+    #
+    # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something)
+    #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
+    #. ARY[col][k] --> (ARY[col][0])[k]
+    if jobs_summary is None:
+        raise Exception('jobs_summary data not provided.')
+        #
+    if len(jobs_summary)==0:
+        return numpy.array([], dtype=cpuh_dtype)
+    #
+    if verbose:
+        print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
+    #
+    t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+    #print('*** shape(t_now): ', numpy.shape(t_now))
+    if verbose:
+        print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
+    #
+    cpuh_dtype = [('time', '>f8'),
+        ('t_start', '>f8'),
+        ('cpu_hours', '>f8'),
+        ('N_jobs', '>f8')]
+    #
+    t_start = jobs_summary['Start']
+    t_end = jobs_summary['End'].copy()
+    #
+    if verbose:
+        print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
+    #
+    # handle currently running jobs (do we need to copy() the data?)
+    t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+    #
+    if verbose:
+        print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
+    #
+    if t_min is None:
+        t_min = numpy.nanmin([t_start, t_end])
+    #
+    if t_max is None:
+        t_max = numpy.nanmax([t_start, t_end])
+    #
+    inputs.update({'t_min':t_min, 't_max':t_max})
+    #
+    # output container:
+    CPU_H = numpy.zeros( (n_points, ), dtype=cpuh_dtype)
+    CPU_H['time'] = numpy.linspace(t_min, t_max, n_points)
+    CPU_H['t_start'] = CPU_H['time']-bin_size
+    #
+    # recursive MPP handler:
+    #  this one is a little bit complicated by the use of linspace(a,b,n), sice linspae is inclusive for both a,b
+    #  so we have to do a trick to avoid douple-calculationg (copying) the intersections (b_k-1 = a_k)
+    if n_cpu>1:
+        #
+        # divide up jobs_summary to a bunch of processes
+        # TODO: do this with a linspace().astype(int)
+        ks = numpy.array([*numpy.arange(0, len(jobs_summary), step_size), len(jobs_summary)])
+        #
+        #
+        with mpp.Pool(n_cpu) as P:
+            R = []
+            #for k_p, (t1, t2) in enumerate(zip(t_intervals[0:-1], t_intervals[1:])):
+            for k1, k2 in zip(ks[0:-1], ks[1:]):
+                #
+                my_inputs = inputs.copy()
+                my_inputs.update({'jobs_summary':jobs_summary[k1:k2], 'n_cpu':1})
+                if verbose:
+                    print('*** my_inputs: ', my_inputs)
+                #
+                R += [P.apply_async(get_cpu_hours, kwds=my_inputs)]
+                #
+            #
+            results = [r.get() for r in R]
+            for r in results:
+                #CPU_H[['cpu_hours', 'N_jobs']][:] += r.get()[['cpu_hours', 'N_jobs']][:]
+                #CPU_H['cpu_hours'] += r.get()['cpu_hours']
+                #CPU_H['N_jobs'] += r.get()['N_jobs']
+                CPU_H['cpu_hours'] += r['cpu_hours']
+                CPU_H['N_jobs']    += r['N_jobs']
+            #
+            return CPU_H
+    #
+    # SPP code:
+    #
+    if verbose:
+        print('*** ', cpu_h.shape)
+    #
+    for k,t in enumerate(CPU_H['time']):
+        # TODO: wrap this into a (@jit compiled) function to parallelize? or add a recursive block
+        #  to parralize the whole function, using an index to break it up.
+        ix_k = numpy.where(numpy.logical_and(t_start<=t, t_end>(t-bin_size) ))[0]
+        #print('*** shape(ix_k): {}//{}'.format(ix_k.shape, numpy.sum(ix_k)) )
+        #
+        N_ix = len(ix_k)
+        if N_ix==0:
+            CPU_H[k] = t, t-bin_size,0.,0.
+            continue
+        #
+        #print('** ** ', ix_k)
+        #CPU_H[k] = t, t-bin_size, numpy.sum( numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
+        #                    numpy.max([(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]]) )*24., N_ix
+        #print('*** *** ', k,t, N_ix, ix_k)
+        #
+        # TODO: this can be made faster (probably?) by basically counting all the middle elements and only dong max(), min(), and arithmetic
+        #  on the leading and trailing elemnents. But if that breaks vectorization, we'll give up those gains.
+        CPU_H[['cpu_hours', 'N_jobs']][k] = numpy.sum( (numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
+            numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] ), N_ix
+    #
+    #CPU_H['cpu_hours']*=24.
+    #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
+    return CPU_H
+#
+#def active_jobs_cpu(n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
+def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000):
+    '''
+    # Since this is now procedural, let's phase out ix. the class-resident version can keep it if so desired.
+    # NOTE on parallelization: There is quite a bit of pre-processing front-matter, so it makes sense to separate the SPP and MPP, as opposed
+    #  to doing a recursive callback. Basically, we put in a fair bit of work to construct our working data; it would be expensive to do it again,
+    #  messy to integrate it into the call signature, etc. In other words, if you're adding a lot of inputs and input handling to accomodate MPP,
+    #  it's probably better to just outsource it. See MPP section below.
+    #
+    # TODO: assess parallel strategy; maybe adjust chunksize to avoid too-big-to-parallel problems.
+    # @n_points: number of points in returned time series.
+    # @bin_size: size of bins. This will override n_points
+    # @t_min: start time (aka, bin phase).
+    # @ix: an index, aka user=my_user
+    # @mpp_chunksize: batch size for MPP, in this case probably an apply_async(). Note that this has a significant affect on speed and parallelization
+    #  performance, and optimal performance is probably related to maximal use of cache. For example, for moderate size data sets, the SPP speed might be ~20 sec,
+    #  and the 2cpu, chunk_size=20000 might be 2 sec, then 1.5, 1.2, for 3,4 cores. toying with the chunk_size parameter suggests that cache size is the thing. It is
+    #  probably worth circling back to see if map_async() can be made to work, since it probably has algorithms to estimate optimal chunk_size.
+    '''
+    #
+    # DEBUG: for now, just set n_cpu=1. we should be able to run this and fix the mpp later...
+    #n_cpu=1
+    #
+    # empty container:
+    null_return = lambda: numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
+    if verbose is None:
+        verbose = 0
+    #
+    mpp_chunksize = mpp_chunksize or 1000
+    n_cpu = n_cpu or 1
+    #
+    if jobs_summary is None:
+        return null_return()
+    #
+    if t_now is None:
+        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+    #
+    if len(jobs_summary)==0:
+        return null_return()
+    #
+    t_start = jobs_summary['Start']
+    t_end = jobs_summary['End']
+    t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+    #
+    #print('** DEBUG: ', t_end.shape, t_start.shape)
+    #
+    if t_min is None:
+        t_min = numpy.nanmin([t_start, t_end])
+    #
+    if verbose:
+        print('** DEBUG: shapes:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
+    #
+    if len(t_start)==1:
+        print('** ** **: t_start, t_end: ', t_start, t_end)
+    #
+    # catch an empty set:
+    # OR or AND condition???
+    if len(t_start)==0 or len(t_end)==0:
+        print('Exception: no data:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
+        return null_return()
+    #
+    if t_max is None:
+        t_max = numpy.nanmax([t_start, t_end])
+    #
+    if not (bin_size is None or t_min is None or t_max is None):
+        n_points = int(numpy.ceil(t_max-t_min)/bin_size)
+    output = numpy.zeros( n_points, dtype=[('time', '>f8'),
+                ('N_jobs', '>f8'),
+                ('N_cpu', '>f8')])
+    output['time'] = numpy.linspace(t_min, t_max, n_points)
+    #
+    # This is a slick, vectorized way to make an index, but It uses way too much memory, and so is probably too slow anyway
+    #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
+    #
+    # Here's the blocked out loop-loop version. Vectorized was originally much faster, but maybe if we pre-set the array
+    #
+    if n_cpu==1:
+#        for j, t in enumerate(output['time']):
+#            # numpy.where() might be pretty expensive, so only use if memory is a major issue
+#            #
+#            #ix_t = numpy.where(numpy.logical_and(t_start<=t, t_end>t))[0]
+#            #output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
+#            #
+#            # but this is still looping on t, where for MPP we've gotten away from that. maybe just call process_ajc_rows() ?
+#            ix_t = numpy.logical_and(t_start<=t, t_end>t)
+#            output[['N_jobs', 'N_cpu']][j] = numpy.sum(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
+#            #
+#            if verbose and j%1000==0:
+#                print('*** PROGRESS: {}/{}'.format(j,len(output)))
+#                print('*** ', output[j-10:j])
+#        #return output
+        #r_nj, r_ncpu = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])
+        #output['N_jobs'] = r_nj
+        #output['N_cpu']  = r_ncpu
+        #
+        # can we save some time by consolidating this into a single statement?
+        output['N_jobs'], output['N_cpu'] = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])
+        return output
+        #
+        #return numpy.core.records.fromarrays([numpy.linspace(t_min, t_max, n_points), *process_ajc_rows(t=numpy.linspace(t_min, t_max, n_points), t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])], dtype=[('time', '>f8'),
+        #        ('N_jobs', '>f8'), ('N_cpu', '>f8')])
+    else:
+#        output = numpy.zeros( n_points, dtype=[('time', '>f8'),
+#                ('N_jobs', '>f8'),
+#                ('N_cpu', '>f8')])
+#        output['time'] = numpy.linspace(t_min, t_max, n_points)
+        #
+        n_procs = min(numpy.ceil(len(t_start)/n_cpu).astype(int), numpy.ceil(len(t_start)/mpp_chunksize).astype(int) )
+        ks_r = numpy.linspace(0, len(t_start), n_procs+1).astype(int)
+        #
+        # NOTE: use smaller of n_cpu, n_procs actual processing units.
+        with mpp.Pool( min(n_cpu, n_procs) ) as P:
+            # need to break this into small enough chunks to not break the pickle() indexing.
+            # smaller of N/n_cpu or N/chunk_size
+            #
+            results = [P.apply_async(process_ajc_rows,  kwds={'t':output['time'], 't_start':t_start[k1:k2],
+                        't_end':t_end[k1:k2], 'NCPUs':jobs_summary['NCPUS'][k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
+            #
+            R = [r.get() for r in results]
+            # join the pool? this throws a "pool still running" error... ???
+            #P.join()
+            #
+            #print('** Shape(R): ', numpy.shape(results))
+        # Does not appear to matter if we do(not) indent the next part (aka, whether we close the Pool(). it makes sense to close (un-indent) for
+        #  consistency, but how does it affect acync. computation? experiment suggests there is no difference, but on a relatively small data set.
+        #  still can't quite explain why the SPP seems to be much much much (non-linerly) slower than mpp.
+        # TODO: how do we numpy.sum(R) on the proper axis?
+        for k_r, (r_nj, r_ncpu) in enumerate(R):
+            #print('**** [{}]: {} ** {}'.format(k_r, r_nj[0:10], r_ncpu[0:10]))
+            # TODO: There is a syntax to do this in one statement. Also, is there an advantage (or problem with async calculation) to do
+            # ... but I can't seem to find a working syntax for something like [structured_array_cols] = [non-structured_array_cols] for
+            #  multiple columns. So we could modify process_ajc_rows() to return a structured array, or we can just do this.
+            #
+            output['N_jobs'] += numpy.array(r_nj)
+            output['N_cpu']  += numpy.array(r_ncpu)
+        #
+        del P, R, results
+        #
+    return output
+#
+def process_ajc_rows(t, t_start, t_end, NCPUs):
+    #
+    #print('*** DEBUG: {} ** {}'.format(len(t_start), len(t_end)))
+    ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
+    #
+    return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[js]) for js in ix_t])])
