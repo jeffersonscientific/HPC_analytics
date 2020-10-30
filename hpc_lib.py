@@ -1311,7 +1311,7 @@ class SACCT_data_direct(SACCT_data_handler):
         self.jobs_summary=self.calc_jobs_summary(sacct_out)
 #
     def get_and_process_sacct_data(self, sacct_str, max_rows=None, delim=None):
-        delim = if delim is None:
+        if delim is None:
             delim = self.delim
         if delim is None:
             delim = '|'
