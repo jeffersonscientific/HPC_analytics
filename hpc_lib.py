@@ -970,6 +970,7 @@ class SACCT_data_handler(object):
     #
     def get_run_times(self, include_running_jobs=True, IX=None):
         '''
+        # NOTE: this should be equivalent to the Elapsed colume, as automagicallhy computed by SLURM.
         # compute job run times, presumably to compute a distribution.
         # @include_running_jobs: if True, then set running jobs (End time = nan --> End time = now()
         # @IX: optional index to subset the data
@@ -1239,6 +1240,78 @@ class SACCT_data_handler(object):
             ax.grid(True)
         #
         return {'cpu_hourly':cpu_hourly, 'jobs_hourly':jobs_hourly, 'cpu_weekly':cpu_weekly, 'jobs_weekly':jobs_weekly}
+    #
+    def compute_vol_distributions(self, x_col='NNodes', normed=True):
+        '''
+        # PDF and CDF of compute-volume (V = ncpus*elapsed_time
+        # @x_col: x_col, so distribution as a function of x_col
+        # @normed: normalize pdf, so sum(pdf)=1; cdf[-1] = 1
+        '''
+        #
+        # shorthand reference:
+        X = self.jobs_summary
+        #
+        compute_volume = X['NCPUS']*X['Elapsed']
+        #
+        N1,N2 = numpy.unique(X[x_col])[numpy.array([0,-1])]
+        #
+        # given the simplicty of continuous, sequential indexing, use an array (not a dict), and there seems to be
+        #  some value in using a structured array.
+        cv_dist = numpy.zeros(shape=(N2-N1+1,), dtype=[(x_col, '>i8'), ('pdf', '>f8'), ('cdf', '>f8')]  )
+        cv_dist[x_col] = numpy.arange(N1,N2+1)
+        #
+        for n, v in zip(X[x_col], compute_volume):
+            cv_dist['pdf'][n-1] += v
+        #
+        if normed:
+            cv_dist['pdf']/=numpy.sum(cv_dist['pdf'])
+        cv_dist['cdf']=numpy.cumsum(cv_dist['pdf'])
+        #
+        return cv_dist
+    #
+    def compute_vol_distributions_report(self, x_col='NNodes', normed=True,
+                                     figsize=None, ax1=None, ax2=None):
+        #
+        distributions = self.compute_vol_distributions(x_col=x_col, normed=normed)
+        #
+        if figsize is None:
+            figsize=(12,10)
+        if ax1 is None or ax2 is None:
+            # valid axes not provided:
+            fg = plt.figure(figsize=figsize)
+            #
+            ax1 = fg.add_subplot('211')
+            ax2 = fg.add_subplot('212', sharex=ax1)
+            ax1.grid()
+            ax2.grid()
+        else:
+            fg = ax1.figure
+        #
+        x     = distributions[x_col]
+        y     = distributions['pdf']
+        y_cum = distributions['cdf']
+        #
+        ax1.plot(x,y, ls='-', marker='o', lw=3)
+        #
+        ax2.plot(x,y_cum, ls='-', marker='o', lw=3)
+        #
+        ax1.fill_between(x[0:5], (y)[0:5], numpy.ones(5)*0., alpha=.2)
+        ax2.fill_between(x[0:5], (y_cum)[0:5], numpy.ones(5)*y_cum[0], alpha=.2)
+        #
+        ax1.set_xlim(-1, 30)
+        #
+        fg.suptitle('Compute Volume $(N_{cpu} \cdot \Delta t)$', size=16)
+        ax1.set_ylabel('PDF', size=16)
+        ax2.set_ylabel('CDF', size=16)
+        ax2.set_xlabel('Nodes ($N_{nodes}$)', size=16)
+
+        print('nodes, pdf, cdf')
+        for k, (n, p1, p2) in enumerate(zip(x, y, y_cum)):
+            print('{}: {}, {}'.format(n,p1,p2))
+            #
+            if k>10:break
+        #
+    #
 
 class SACCT_data_direct(SACCT_data_handler):
     format_list_default = ['User', 'Group', 'GID', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
