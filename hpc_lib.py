@@ -59,6 +59,11 @@ def str2date_num(dt_str, verbose=0):
 def simple_date_string(dtm, delim='-'):
     # TODO: replace str() call with a proper .encode(), maybe .encode('utf-8') ?
     return delim.join([str(x) for x in [dtm.year, dtm.month, dtm.day]])
+    
+def datetime_to_SLURM_datestring(dtm, delim='-'):
+    zf = lambda x:str(x).zfill(2)
+    #
+    return '{}T{}:{}:{}'.format(delim.join([str(x) for x in [dtm.year, zf(dtm.month), zf(dtm.day)]]), zf(dtm.hour), zf(dtm.minute), zf(dtm.second))
 #
 #@numba.jit
 def elapsed_time_2_day(tm_in, verbose=0):
@@ -510,17 +515,20 @@ class SACCT_data_handler(object):
         return pandas.DataFrame(data, columns=active_headers).to_records()
         #
     @numba.jit
-    def process_row(self, rw):
+    def process_row(self, rw, headers=None, RH=None):
         # use this with MPP processing:
         # ... but TODO: it looks like this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
         #  class object... so we need to move the MPP object out of class.
         #
+        headers = (headers or self.headers)
+        RH      = (RH or self.RH)
         # use this for MPP processing:
         rws = rw.split(self.delim)
+        #print('*** DEBUG lens: ', len(rws), len(headers))
         #return [None if vl=='' else self.types_dict.get(col,str)(vl)
         #            for k,(col,vl) in enumerate(zip(self.headers, rw.split(self.delim)[:-1]))]
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
-                    for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
+                    for k,(col,vl) in enumerate(zip(headers, rws[:-1]))] + [rws[RH['JobID']].split('.')[0]]
     #
     # GIT Note: Deleting the depricated get_cpu_hours_2() function here. It can be recovered from commits earlier than
     #  31 Aug 2020.
@@ -1311,6 +1319,7 @@ class SACCT_data_handler(object):
             #
             if k>10:break
         #
+        return distributions
     #
 
 class SACCT_data_direct(SACCT_data_handler):
@@ -1318,14 +1327,23 @@ class SACCT_data_direct(SACCT_data_handler):
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqGRES', 'AllocGRES', 'ReqTRES',
                'AllocTRES']
-    def __init__(self, group=None, partition=None, delimiter='|', start_date=None, end_date=None, more_options=[], delta_t_days=30,
-        format_list=None, verbose=0):
+    def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=30,
+        format_list=None, n_cpu=None, types_dict=None, verbose=0):
+        # TODO: this is a mess. I think it needs to be a bit nominally sloppier, then cleaner -- so maybe read the first block,
+        #  characterize the data, then process the rest of the elements, or read the data (in parallel), then process in parallel.
+        #  rather than trying to do it all in one call...
         #
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         options = [tuple(rw) if len(rw)>=2 else (rw,None) for rw in more_options]
         #
-        format_list = format_list or format_list_default
+        if types_dict is None:
+            #
+            types_dict=self.default_types_dict
+        #
+        format_list = format_list or self.format_list_default
         format_string = ','.join(format_list)
+        #
+        n_cpu = n_cpu or min(6, mpp.cpu_count() )
         #
         if not group is None:
             options += [('group', group)]
@@ -1340,19 +1358,22 @@ class SACCT_data_direct(SACCT_data_handler):
                 print('** Warning: delta_t_days input not valid. set to default value={}'.format(delta_t_days))
             #
         #
-        options += [('delimiter', '"{}"'.format(delimiter))]
+        options += [('delimiter', '"{}"'.format(delim))]
         
         #
         # process start_/end_date
         if isinstance(start_date, str):
             start_date = str2date(start_date)
-        if instance(end_date, str):
+        if isinstance(end_date, str):
             end_date = str2date(end_date)
         #
         start_end_times = [(start_date, min(start_date + dtm.timedelta(days=delta_t_days), end_date))]
-        while start_end_times[-1][1] < end_time:
+        while start_end_times[-1][1] < end_date:
             start_end_times += [[start_end_times[-1][1], min(start_end_times[-1][1] + dtm.timedelta(days=30), end_date) ]]
         #
+        self.start_end_times = start_end_times
+        #
+        options_str=''
         for (op,vl) in options:
             if vl is None:
                 options_str += '--{}'.format(op)
@@ -1362,40 +1383,107 @@ class SACCT_data_direct(SACCT_data_handler):
         #
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         #
-        data = self.load_sacct_data()
-    def load_sacct_data(self, n_cpu=None):
+        data = self.load_sacct_data(options_str=options_str, format_string=format_string)
+        self.jobs_summary=self.calc_jobs_summary(data)
+        #
+        del data
+    #
+    def load_sacct_data(self, options_str='', format_string='', n_cpu=None, start_end_times=None, max_rows=None, verbose=False):
         #
         n_cpu = n_cpu or self.n_cpu
         n_cpu = n_cpu or 4
         #
-        sacct_output = ''
-        for k, (start, stop) in enumerate(start_end_times):
-            sacct_str = 'srun sacct {} {} -p --starttime={} --endtime={} --format={} '.format( ('--noheader' if k>0 else ''),
-                                    options_str, start, stop, format_string )
-            #
-            #sacct_str_list = sacct_str.split()
-            print('** [{}]: {}\n'.format(k, sacct_str))
-            #
-            #S = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE)
-            # TODO: parallelize...
-            
-            sacct_out += subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode()
+        start_end_times = start_end_times or self.start_end_times
         #
-        self.jobs_summary=self.calc_jobs_summary(sacct_out)
-#
-    def get_and_process_sacct_data(self, sacct_str, max_rows=None, delim=None):
+        if n_cpu == 1:
+            sacct_out = None
+            for k, (start, stop) in enumerate(start_end_times):
+                sacct_str = 'srun sacct {} {} -p --allusers --starttime={} --endtime={} --format={} '.format( ('--noheader' if k>0 else ''),
+                                        options_str, datetime_to_SLURM_datestring(start),
+                                        datetime_to_SLURM_datestring(stop), format_string )
+                #
+                if verbose: print('** [{}]: {}\n'.format(k, sacct_str))
+                #
+                #sacct_out += subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode()
+                if sacct_out is None:
+                    sacct_out = self.get_and_process_sacct_data(sacct_str)
+                else:
+                    # will appending work, or do we need to handle the headers, etc. in a more sophisticated way? This is still
+                    #  inefficient; there is a bit of copying, etc. that should be optimized later.
+                    sacct_out = numpy.append(sacct_out, self.get_and_process_sacct_data(sacct_str) )
+        else:
+            # TODO: consolidate spp,mpp methods...
+            with mpp.Pool(n_cpu) as P:
+                R = []
+                for k, (start, stop) in enumerate(start_end_times):
+                    sacct_str = 'srun sacct {} -p --allusers --starttime={} --endtime={} --format={} '.format(
+                        options_str, datetime_to_SLURM_datestring(start),
+                        datetime_to_SLURM_datestring(stop), format_string )
+                    #
+                    kw_prams = {'sacct_str':sacct_str, 'delim':self.delim, 'with_headers':True,'as_dict':False }
+                    if not max_rows is None:
+                        kw_prams['max_rows'] = int(numpy.ceil(max_rows/n_cpu))
+                    #
+                    if verbose: print('*** DEBUG: len: ', len(sacct_str))
+                    R += [P.apply_async(self.get_and_process_sacct_data, kwds=kw_prams )]
+                #
+                # is this the right syntax?
+                Rs = [r.get() for r in R]
+            #
+            #sacct_out = Rs[0]
+            len_total = numpy.sum([len(x) for x in Rs])
+            sacct_out = numpy.zeros((len_total, ), dtype=Rs[0].dtype)
+            self.headers = sacct_out.dtype.names
+            k0=0
+            for k,R in enumerate(Rs):
+                n = len(R)
+                for col in R.dtype.names:
+                    sacct_out[col][k0:k0+n][:]=R[col]
+                #
+                k0+=n
+            #
+        #
+        return sacct_out
+    #
+    def get_and_process_sacct_data(self, sacct_str='', max_rows=None, delim=None, with_headers=True, as_dict=False, verbose=False):
+        '''
+        # fetch and pre-process data from a sacct query (scct_str). Use this by itself or as a worker function.
+        # @with_headers: return with headers, as a recarray or structured array, or similar, or just as a block of data.
+        # maybe return an object like {'headers':headers 'data':data} ???
+        # @with_headers and @as_dict are sort of a confusing mess, but it's what we have for now, and it makes sense when you're
+        #   trying to do multiprocessing.:
+        #  with_headers==True && as_dict==True: returns dict {'headers':headers, 'data':data}
+        #  with_headers==True && as_dict==False: default config, returns a recordarray()
+        #  with_headers==False: returns just the data as a list.
+        '''
+        #
         if delim is None:
             delim = self.delim
         if delim is None:
             delim = '|'
         #
-        sacct_output = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode()
-        headers = sacct_output[0][:-1].split(delim)[:-1] + ['JobID_parent']
+        sacct_output = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
+        #print('** ', sacct_str)
+        headers = sacct_output[0][:-1].replace('\"', '').split(delim)[:-1] + ['JobID_parent']
+        if verbose:
+            print('*** DEBUG: len(sacct_output): {}'.format(len(sacct_output)))
+            print('*** DEGBUG: headers[{}]: {}'.format(len(headers), headers))
         RH = {h:k for k,h in enumerate(headers)}
         #
-        data = [self.process_row(rw) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) ]
+        data = [self.process_row(rw.replace('\"', ''), headers=headers, RH=RH) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) and len(rw)>1 ]
         # pandas.DataFrame(data, columns=active_headers).to_records()
-
+        #
+        # this is a bit of a hack, but it should help with MPP.
+        #
+        if with_headers:
+            # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
+            if as_dict:
+                return {'headers':headers, 'data':data}
+            else:
+                return pandas.DataFrame(data, columns=headers).to_records()
+        else:
+            return data
+        
         #
     
 class SACCT_data_from_h5(SACCT_data_handler):
