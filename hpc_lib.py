@@ -34,6 +34,7 @@ day_2_sec=24.*3600.
 #
 mazama_groups_ids = ['tgp', 'sep', 'clab', 'beroza', 'lnt', 'ds', 'nsd', 'oxyvibtest', 'cardamom', 'crustal', 'stress', 'das', 'ess', 'astro', 'seaf', 'oneill', 'modules', 'wheel', 'ds2', 'shanna', 'issm', 'fs-uq-zechner', 'esitstaff', 'itstaff', 'sac-eess164', 'sac-lab', 'sac-lambin', 'sac-lobell', 'fs-bpsm', 'fs-scarp1', 'fs-erd', 'fs-sedtanks', 'fs-sedtanks-ro', 'fs-supria', 'web-rg-dekaslab', 'fs-cdfm', 'suprib', 'cees', 'suckale', 'schroeder', 'thomas', 'ere', 'smart_fields', 'temp', 'mayotte-collab']
 #
+# TODO: LOTS more serc_user ids!
 serc_user_ids = ['biondo', 'beroza', 'sklemp', 'harrisgp', 'gorelick', 'edunham', 'sagraham', 'omramom', 'aditis2', 'oneillm', 'jcaers', 'mukerji', 'glucia', 'tchelepi', 'lou', 'segall', 'horne', 'leift']
 user_exclusions = ['myoder96', 'dennis']
 group_exclusions = ['modules']
@@ -135,6 +136,12 @@ def elapsed_time_2_sec_v(tm_in, verbose=0):
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
 #
+def write_sacct_batch_script():
+    '''
+    # write a sacct request. Since this is so fast on Sherlock, let's split this into the sacct request and the batch script. we'll probably
+    #  not batch the sacct separately.
+    '''
+    return None
 #
 class SACCT_data_handler(object):
     #
