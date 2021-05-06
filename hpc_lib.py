@@ -146,6 +146,8 @@ def write_sacct_batch_script():
 class SACCT_data_handler(object):
     #
     # TODO: write GRES (gpu, etc. ) handler functions.
+    # TODO: add real-time options? to get sacct data in real time; we can still stash it into a file if we need to, but
+    #   more likely a varriation on load_sacct_data() that executes the sacct querries, instead of loading a file.
     dtm_handler_default = str2date_num
     #
     #default_types_dict = default_SLURM_types_dict
@@ -407,14 +409,15 @@ class SACCT_data_handler(object):
             # use a buffer
             sub_data = data[sorted(ks)]
             #
-            #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
+            # was there a reason to Not use nanmnax() for NCPUS and NNodes? I seem to remember there was... some way
+            #  that nanmax/min() misbehaves...
             jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
             jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
-            jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
-            jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
+            jobs_summary[k]['NCPUS'] = numpy.nanmax(sub_data['NCPUS'])
+            jobs_summary[k]['NNodes'] = numpy.nanmax(sub_data['NNodes'])
             #
             # aggregate on NTasks? The first row should be NTasks for the submitted job
-            #jobs_summary[k]['NTasks'] = numpy.nanmax(sub_data['NTasks'])
+            jobs_summary[k]['NTasks'] = numpy.nanmax(sub_data['NTasks'])
             #
             # move this into the loop. weird things can happen with buffers...
             del sub_data
@@ -428,6 +431,7 @@ class SACCT_data_handler(object):
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
         # TODO: this should probably be a class of its own. Note that it depends on a couple of class-scope functions in
         #  ways that are not really class hierarchically compatible.
+        # TODO: add capability to execute sacct queries. This is not practical on Mazama, but very feasible on Mazama.
         if data_file_name is None:
             data_file_name = self.data_file_name
         if delim is None:
@@ -440,11 +444,6 @@ class SACCT_data_handler(object):
         # mpp.cpu_count() is dangerous for HPC environments. So set to 1? Maybe hedge and guess 2 or 4 (we can hyperthread a bit)?
         #n_cpu = n_cpu or mpp.cpu_count()
         n_cpu = n_cpu or 1
-        #
-        # have not yet figured out how to make max_rows work with MPP (probably just need to load the data to an array, then process)
-        #, so for now force it to SPP:
-#        if not max_rows is None:
-#            n_cpu = 1
         #
         if verbose:
             print('** load_sact_data(), max_rows={}'.format(max_rows))
@@ -475,13 +474,17 @@ class SACCT_data_handler(object):
                 P = mpp.Pool(n_cpu)
                 #self.headers = headers
                 #
-                # TODO: how do we make this work with max_rows limit?
+                # TODO: how do we make this work with mpp and max_rows limit? This could be less of a problem on newer
+                #  HPC systems.
                 # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
                 # for the use of P.map(), using a context manager and functools.partial()
                 # TODO: use an out-of-class variation of process_row() (or maybe the whole function), or modify the in-class so MPP does not need
                 #   to pickle over the whole object, which breaks for large data sets. tentatively, use apply_async() and just pass
                 #   headers, types_dict, and RH.
                 #   def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={})
+                # TODO: to enforce maxrows, why not just use fin.read() (and a few more small changes)?
+                #  Could be that we're just running out of memory on Mazama, or we're trying to benefit from parallel file
+                #  read.
                 if max_rows is None:
                     results = P.map_async(self.process_row, fin, chunksize=chunk_size)
                 else:
@@ -512,11 +515,6 @@ class SACCT_data_handler(object):
         if verbose:
             print('** load_sacct_data::len: ', len(data))
             self.raw_data_len = len(data)
-        #
-        #self.data=data
-        # TODO: asrecarray()?
-        #self.data = pandas.DataFrame(data, columns=active_headers).to_records()
-        #return data
         #
         # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
         return pandas.DataFrame(data, columns=active_headers).to_records()
@@ -1332,19 +1330,19 @@ class SACCT_data_handler(object):
 class SACCT_data_direct(SACCT_data_handler):
     format_list_default = ['User', 'Group', 'GID', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
-               'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqGRES', 'AllocGRES', 'ReqTRES',
-               'AllocTRES']
+               'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES']
     def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=30,
-        format_list=None, n_cpu=None, types_dict=None, verbose=0):
+        format_list=None, n_cpu=None, types_dict=None, verbose=0, **kwargs):
         # TODO: this is a mess. I think it needs to be a bit nominally sloppier, then cleaner -- so maybe read the first block,
         #  characterize the data, then process the rest of the elements, or read the data (in parallel), then process in parallel.
         #  rather than trying to do it all in one call...
         #
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         options = [tuple(rw) if len(rw)>=2 else (rw,None) for rw in more_options]
+        options += [tuple((ky[6:],vl)) for ky,vl in kwargs.items() if ky.lower().startswith('sacct_')]
+        sacct_str_template = 'sacct {} -p --allusers --starttime={} --endtime={} --format={} '
         #
         if types_dict is None:
-            #
             types_dict=self.default_types_dict
         #
         format_list = format_list or self.format_list_default
@@ -1374,6 +1372,8 @@ class SACCT_data_direct(SACCT_data_handler):
         if isinstance(end_date, str):
             end_date = str2date(end_date)
         #
+        #print('*** ', start_date, type(start_date), end_date, type(end_date))
+        #
         start_end_times = [(start_date, min(start_date + dtm.timedelta(days=delta_t_days), end_date))]
         while start_end_times[-1][1] < end_date:
             start_end_times += [[start_end_times[-1][1], min(start_end_times[-1][1] + dtm.timedelta(days=30), end_date) ]]
@@ -1383,17 +1383,24 @@ class SACCT_data_direct(SACCT_data_handler):
         options_str=''
         for (op,vl) in options:
             if vl is None:
-                options_str += '--{}'.format(op)
+                options_str += f'-{op}'
             else:
-                options_str += ' --{}={} '.format(op,vl)
+                if len(op)==1:
+                    options_str += f' -{op} {vl} '
+                elif len(op)>1:
+                    options_str += f' --{op}={vl} '
             #
         #
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         #
+        print('*** DEBUG: Now execute load_sacct_data()')
         data = self.load_sacct_data(options_str=options_str, format_string=format_string)
+        #
+        print('*** DEBUG: load_sacct_data() executed. Compute calc_jobs_summary()')
         self.jobs_summary=self.calc_jobs_summary(data)
         #
-        del data
+        #del data
+        self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
     #
     def load_sacct_data(self, options_str='', format_string='', n_cpu=None, start_end_times=None, max_rows=None, verbose=False):
         #
@@ -1401,13 +1408,16 @@ class SACCT_data_direct(SACCT_data_handler):
         n_cpu = n_cpu or 4
         #
         start_end_times = start_end_times or self.start_end_times
+        sacct_str_template = self.sacct_str_template
         #
         if n_cpu == 1:
             sacct_out = None
             for k, (start, stop) in enumerate(start_end_times):
-                sacct_str = 'srun sacct {} {} -p --allusers --starttime={} --endtime={} --format={} '.format( ('--noheader' if k>0 else ''),
-                                        options_str, datetime_to_SLURM_datestring(start),
-                                        datetime_to_SLURM_datestring(stop), format_string )
+                #sacct_str = 'srun sacct {} {} -p --allusers --starttime={} --endtime={} --format={} '.format( ('--noheader' if k>0 else ''),
+                #                        options_str, datetime_to_SLURM_datestring(start),
+                #                        datetime_to_SLURM_datestring(stop), format_string )
+                sacct_str = sacct_str_template.format(options_str, datetime_to_SLURM_datestring(start),
+                                    datetime_to_SLURM_datestring(stop), format_string )
                 #
                 if verbose: print('** [{}]: {}\n'.format(k, sacct_str))
                 #
@@ -1423,7 +1433,7 @@ class SACCT_data_direct(SACCT_data_handler):
             with mpp.Pool(n_cpu) as P:
                 R = []
                 for k, (start, stop) in enumerate(start_end_times):
-                    sacct_str = 'srun sacct {} -p --allusers --starttime={} --endtime={} --format={} '.format(
+                    sacct_str = sacct_str_template.format(
                         options_str, datetime_to_SLURM_datestring(start),
                         datetime_to_SLURM_datestring(stop), format_string )
                     #
@@ -1469,9 +1479,14 @@ class SACCT_data_direct(SACCT_data_handler):
         if delim is None:
             delim = '|'
         #
+        # NOTE: instead of scctt_str.split(), we can just use the shell=True option.
         sacct_output = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         #print('** ', sacct_str)
-        headers = sacct_output[0][:-1].replace('\"', '').split(delim)[:-1] + ['JobID_parent']
+        if '--nohheader' in sacct_str:
+            headers = [str(k) for k,x in enumerate( numpy.arange(sacct_output[0][:-1].split(delim)) )]
+        else:
+            headers = sacct_output[0][:-1].replace('\"', '').split(delim)[:-1] + ['JobID_parent']
+        #
         if verbose:
             print('*** DEBUG: len(sacct_output): {}'.format(len(sacct_output)))
             print('*** DEGBUG: headers[{}]: {}'.format(len(headers), headers))
@@ -2375,6 +2390,12 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     if data is None:
         raise Exception('No data provided.')
     #
+    # TODO: this:
+#    if hasattr(data, 'dtype'):
+#        dtype_dict = dict(list(data.dtype))
+#        # or:
+#        #dtype_dict = {ky:val for ky,vl in data.dtype}
+    #
     n_cpu = (n_cpu or 1)
     if verbose:
         print('*** computing jobs_summary func on {} cpu'.format(n_cpu))
@@ -2479,11 +2500,19 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #
 #        jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
 #        jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
-#        jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
-#        jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
+#        jobs_summary[k]['NCPUS'] = numpy.nanmax(sub_data['NCPUS'])
+#        jobs_summary[k]['NNodes'] = numpy.nanmax(sub_data['NNodes']).astype(int)
+#        jobs_summary[k]['NTasks'] = numpy.nanmax(sub_data['NTasks']).astype(int)
         #
         # This is the proper syntax (not forgiving) to assign a row:
-        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes']][k] = numpy.nanmax(sub_data['End']), numpy.nanmin(sub_data['Start']), numpy.max(sub_data['NCPUS']), numpy.max(sub_data['NNodes'])
+        # again, was there a reason to NOT use nanmax()? Might be better to make our own nanmax(), like:
+        # x = numpy.max(X[numpy.isnan(X).invert()])
+        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks']][k] = numpy.nanmax(sub_data['End']),\
+            numpy.nanmin(sub_data['Start']),\
+            numpy.nanmax(sub_data['NCPUS']).astype(int),\
+            numpy.nanmax(sub_data['NNodes']).astype(int),\
+            numpy.nanmax(sub_data['NTasks']).astype(int)
+            
         #
         # move this into the loop. weird things can happen with buffers...
         del sub_data
