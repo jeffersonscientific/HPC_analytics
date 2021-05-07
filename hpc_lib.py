@@ -1332,7 +1332,7 @@ class SACCT_data_direct(SACCT_data_handler):
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES']
     def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=30,
-        format_list=None, n_cpu=None, types_dict=None, verbose=0, **kwargs):
+        format_list=None, n_cpu=None, types_dict=None, verbose=0, chunk_size=1000, **kwargs):
         # TODO: this is a mess. I think it needs to be a bit nominally sloppier, then cleaner -- so maybe read the first block,
         #  characterize the data, then process the rest of the elements, or read the data (in parallel), then process in parallel.
         #  rather than trying to do it all in one call...
