@@ -164,8 +164,8 @@ class SACCT_data_handler(object):
     time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
     #
     #
-    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
-                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None):
+    def __init__(self, data_file_name=None, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
+                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None, **kwargs):
         '''
         # handler object for sacct data.
         #
@@ -173,6 +173,9 @@ class SACCT_data_handler(object):
         #  requirements, But for starters, let's optinally dump the raw data. we shouldn't actually need it for
         #  anything we're doing right now. if it comes to it, maybe we dump it as an HDF5 or actually build a DB of some sort.
         '''
+        # TODO: reorganize a bit. Consolidate load_data() functionality into... a function, which we can rewrite
+        #  for each sub-class. Then we can either similarly offload the calc_summaries() type work to a separate
+        #  function or leave them in __init__() where they probably belong.
         #
         n_cpu = n_cpu or 1
         #
@@ -185,6 +188,44 @@ class SACCT_data_handler(object):
             types_dict=self.default_types_dict
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        #
+        self.load_data()
+        #
+        if h5out_file is None:
+            h5out_file='sacct_output.h5'
+        self.h5out_file = h5out_file
+        #
+        self.headers = self.data.dtype.names
+        # row-headers index:
+        self.RH = {h:k for k,h in enumerate(self.headers)}
+        self.calc_summaries()
+        #
+    #
+    def calc_summaries(self, n_cpu=None, chunk_size=None):
+        #
+        n_cpu = n_cpu or self.n_cpu
+        n_points_usage = self.n_points_usage
+        chunk_size = chunk_size or self.chunk_size
+        #
+        self.jobs_summary = self.calc_jobs_summary()
+        if not self.keep_raw_data:
+            del self.data
+        #
+        #self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        #
+        # TODO: (re-)parallelize this...?? running continuously into problems with pickled objects being too big, so
+        #   we need to be smarter about how we parallelize. Also, parallelization is just costing a lot of memory (like 15 GB/CPU -- which
+        #   seems too much, so could be a mistake, but probalby not, since I'm pretty sure I ran a smilar job in SPP on <8GB).
+        
+        self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
+        self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
+        self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
+        #
+
+    #
+    def load_data(self, data_file_name=None):
+        #
+        data_file_name = (data_file_name or self.data_file_name)
         #
         # especially for dev, allow to pass the recarray object itself...
         if isinstance(data_file_name, str):
@@ -202,74 +243,7 @@ class SACCT_data_handler(object):
         else:
             self.data = data_file_name
             #self.data = self.data_df.values.to_list()
-        if h5out_file is None:
-            h5out_file='sacct_output.h5'
-        self.h5out_file = h5out_file
         #
-        self.headers = self.data.dtype.names
-        # row-headers index:
-        self.RH = {h:k for k,h in enumerate(self.headers)}
-        #
-        # local shorthand:
-        data = self.data
-        #
-        jobs_summary = self.calc_jobs_summary()
-        # BEGIN old jobs_summary code:
-#        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in self.data['JobID']])
-#        #
-#        #job_ID_index = {ss:[] for ss in numpy.unique([s.split('.')[0]
-#        #                                            for s in self.data['JobID'][ix_user_jobs] ])}
-#        #
-#        # this might be faster to get the job_ID_index since it only has to find the first '.':
-#        job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
-#                                                    for s in self.data['JobID'][ix_user_jobs] ])}
-#        #
-#        #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
-#        for k,s in enumerate(self.data['JobID_parent']):
-#            job_ID_index[s] += [k]
-#        #
-#        #
-#        if verbose:
-#            print('Starting jobs_summary...')
-#        # we should be able to MPP this as well...
-#        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
-#        t_now = mpd.date2num(dtm.datetime.now())
-#        for k, (j_id, ks) in enumerate(job_ID_index.items()):
-#            jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
-#            #
-#            # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
-#            #  use their index position, rather than min()/max()... but we'd need to be more careful about
-#            #. that sorting step, and upstream dependencies are dangerous...
-#            # NOTE: might be faster to index eact record, aka, skip sub_data and for each just,
-#            #. {stuff} = max(data['End'][ks])
-#            #
-#            sub_data = data[sorted(ks)]
-#            #
-#            #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
-#            jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
-#            jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
-#            jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
-#            jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
-#        #
-#        del sub_data
-#        #
-#        if verbose:
-#            print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
-        #
-        # END old jubs_summary code
-        #
-        if not keep_raw_data:
-            del data
-        #
-        #
-        self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
-        #
-        # TODO: (re-)parallelize this...?? running continuously into problems with pickled objects being too big, so
-        #   we need to be smarter about how we parallelize. Also, parallelization is just costing a lot of memory (like 15 GB/CPU -- which
-        #   seems too much, so could be a mistake, but probalby not, since I'm pretty sure I ran a smilar job in SPP on <8GB).
-        self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
-        self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
-        self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
     #
     def write_hdf5(self, h5out_file=None, append=False):
         h5out_file = h5out_file or self.h5out_file
@@ -1332,12 +1306,18 @@ class SACCT_data_direct(SACCT_data_handler):
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES']
     def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=30,
-        format_list=None, n_cpu=None, types_dict=None, verbose=0, chunk_size=1000, **kwargs):
+        format_list=None, n_cpu=None, types_dict=None, verbose=0, chunk_size=1000,
+        h5out_file=None, keep_raw_data=False, n_points_usage=1000,
+        **kwargs):
+        #
         # TODO: this is a mess. I think it needs to be a bit nominally sloppier, then cleaner -- so maybe read the first block,
         #  characterize the data, then process the rest of the elements, or read the data (in parallel), then process in parallel.
         #  rather than trying to do it all in one call...
+        #  TODO: wrap all the data loading into a data_load() function, which will need to be nullified to not inherit\
+        #   from the parent class.
         #
-        self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
         options = [tuple(rw) if len(rw)>=2 else (rw,None) for rw in more_options]
         options += [tuple((ky[6:],vl)) for ky,vl in kwargs.items() if ky.lower().startswith('sacct_')]
         sacct_str_template = 'sacct {} -p --allusers --starttime={} --endtime={} --format={} '
@@ -1394,13 +1374,18 @@ class SACCT_data_direct(SACCT_data_handler):
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         #
         print('*** DEBUG: Now execute load_sacct_data()')
-        data = self.load_sacct_data(options_str=options_str, format_string=format_string)
+        self. data = self.load_sacct_data(options_str=options_str, format_string=format_string)
         #
         print('*** DEBUG: load_sacct_data() executed. Compute calc_jobs_summary()')
-        self.jobs_summary=self.calc_jobs_summary(data)
+        #self.jobs_summary=self.calc_jobs_summary(data)
+        #
+        super(SACCT_data_direct, self).__init__(delim=delim, start_date=start_date, end_date=end_date, h5out_file=h5out_file, keep_raw_data=keep_raw_data,n_points_usage=n_points_usage, n_cpu=n_cpu, types_dict=types_dict, verbose=verbose, chunk_size=chunk_size, **kwargs)
         #
         #del data
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
+    #
+    def load_data(self, *args, **kwargs):
+        pass
     #
     def load_sacct_data(self, options_str='', format_string='', n_cpu=None, start_end_times=None, max_rows=None, verbose=False):
         #
@@ -1459,6 +1444,8 @@ class SACCT_data_direct(SACCT_data_handler):
                 #
                 k0+=n
             #
+        #
+        
         #
         return sacct_out
     #
@@ -1881,7 +1868,7 @@ class SACCT_groups_analyzer_report(object):
     #
 #
 class SACCT_groups_analyzer_report_handler(object):
-
+    #
     def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
                  out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', n_points_wkly_hrs=500,
                  fig_width_tex='.8', qs=[.45, .5, .55], fig_size=(10,8), SACCT_obj=None, max_rws=None ):
