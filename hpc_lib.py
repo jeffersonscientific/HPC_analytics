@@ -2098,11 +2098,10 @@ def get_group_users(user_id):
     #
     S = S.stdout.decode()[:-1].split(chr(32))
     S = dict([rw.split('=') for rw in S])
-    
     #
     return S
 #
-
+#
 def get_resercher_groups_dict():
     sp_command = 'getent group'
     #
