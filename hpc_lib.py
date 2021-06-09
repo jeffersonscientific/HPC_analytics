@@ -1206,7 +1206,7 @@ class SACCT_data_handler(object):
             #ax.set_xticks(numpy.arange(0,8)*weekly_Period)
             
             ax.set_xticks(cpu_weekly['x']*weekly_Period)
-            ax.set_xticklabels(['sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
+            ax.set_xticklabels(['sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][0:len(cpu_weekly['x'])])
             
             #ax.set_xticklabels(['', 'sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
             #ax.grid()
@@ -1788,7 +1788,7 @@ class SACCT_groups_analyzer_report(object):
             ax1a.plot(act_jobs['time'], act_jobs['N_cpu'], ls='--', lw=2., marker='', color='m',
                       label='CPUs', alpha=.5)
             #ax1a.set_title('Group: {}'.format(ky))
-            fg.suptitle('Groaup: {}'.format(ky), size=16)
+            fg.suptitle('Group: {}'.format(ky), size=16)
             ax1a.set_title('Active Jobs, CPUs')
             #
             ax2.plot(wkly_hrs['time'], wkly_hrs['cpu_hours']/7., ls='-', marker='.', label='bins=7 day', zorder=11)
@@ -2103,6 +2103,8 @@ def get_group_users(user_id):
 #
 #
 def get_resercher_groups_dict():
+    # TODO: constraints for this? I think this was developed for Mazama. For Sherlock, we might need some secodary groups, or
+    #  some other constraint.
     sp_command = 'getent group'
     #
     sp = subprocess.run(shlex.split(sp_command), shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -2128,7 +2130,39 @@ def get_resercher_groups_dict():
         sp_out[rws[0]] = usrs
     #
     return sp_out
-    
+#
+def get_PI_groups_from_groups(groups='sh_s-ees', user_list=[]):
+    '''
+    # get a list of PI (primary) groups for all members of a secondary group. For example, get PI groups for all members of a shared partition or school.
+    # both groups are linux groups. Alternatively pass a user_list; get all unique primary groups for those users.
+    # @groups: a linux group id (or list of)
+    # @user_list: Optional. List of user IDs.
+    # the two lists will be added together.
+    '''
+    #
+    #
+    if not groups is None:
+        for sg in numpy.atleast_1d(groups):
+            #print('*** *', ' '.join(['getent', 'group', sg]))
+            user_list += subprocess.run(['getent', 'group', sg], shell=False, capture_output=True).stdout.decode().replace('\n','').split(',')
+    #
+    # Now, collect into a {PI_group:]users], ...} dict.
+    pi_groups={}
+    for usr in user_list:
+    #for pi, usr in zip([subprocess.run(['id', '--group', '--name', s], shell=False, capture_output=True).stdout() for s in user_list], user_list):
+        #print('*** usr: ', usr)
+        if "*" in usr:
+            continue
+        #
+        pi = subprocess.run(['id', '--group', '--name', usr], shell=False, capture_output=True).stdout.decode().replace('\n', '')
+        #
+        
+        if not pi in pi_groups.keys():
+            pi_groups[pi]=[]
+        #
+        pi_groups[pi] += [usr]
+    #
+    return pi_groups
 
 def get_group_members(group_id):
     '''
@@ -2137,7 +2171,8 @@ def get_group_members(group_id):
     #
     #
     #sp_command="getent group | grep {}".format(group_id)
-    sp_command = 'getent group'
+    #sp_command = f'getent group {group_id}'
+    sp_command = ['getent', 'group', group_id]
     #
     # NOTE: in order to run a complex linux command, set shell=True. Some will say, however, that this is not recommended for security -- among other, reasons.
     # https://stackoverflow.com/questions/13332268/how-to-use-subprocess-command-with-pipes
@@ -2145,12 +2180,11 @@ def get_group_members(group_id):
     #  process. For something simple, I don't see the advantage of that over just doing the grep or other operation in Python, which is a better environment for that
     #  sort of work anway. The advantage of the piped command is it is only a single call to the OS.
     #
-    #print('subprocessing with shell=True...')
-    # ...but it still breaks. likely composite subprocesses are not permitted, for security  purposes? make ssens...
-    sp = subprocess.run(shlex.split(sp_command), shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Python 3.6 might still require this syntax:
+    #sp = subprocess.run(shlex.split(sp_command), shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     #
-    
-    
+    # this should work for python 3.8 or so
+    sp = subprocess.run(sp_command, shell=False, capture_output=True)
     #
     return sp.stdout
 #
@@ -2752,13 +2786,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
                         't_end':t_end[k1:k2], 'NCPUs':jobs_summary['NCPUS'][k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
             #
             R = [r.get() for r in results]
-            # join the pool? this throws a "pool still running" error... ???
-            #P.join()
-            #
-            #print('** Shape(R): ', numpy.shape(results))
-        # Does not appear to matter if we do(not) indent the next part (aka, whether we close the Pool(). it makes sense to close (un-indent) for
-        #  consistency, but how does it affect acync. computation? experiment suggests there is no difference, but on a relatively small data set.
-        #  still can't quite explain why the SPP seems to be much much much (non-linerly) slower than mpp.
+        #  still can't quite explain why the SPP seems to be much much much (non-linerly) slower than mpp (on Mazama)
         # TODO: how do we numpy.sum(R) on the proper axis?
         for k_r, (r_nj, r_ncpu) in enumerate(R):
             #print('**** [{}]: {} ** {}'.format(k_r, r_nj[0:10], r_ncpu[0:10]))
