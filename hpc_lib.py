@@ -1125,12 +1125,12 @@ class SACCT_data_handler(object):
         #
         fg = plt.figure(figsize=figsize)
         #
-        ax1 = fg.add_subplot('231')
-        ax2 = fg.add_subplot('232', projection=periodic_projection)
-        ax3 = fg.add_subplot('233', projection=periodic_projection)
-        ax4 = fg.add_subplot('234')
-        ax5 = fg.add_subplot('235', projection=periodic_projection)
-        ax6 = fg.add_subplot('236', projection=periodic_projection)
+        ax1 = fg.add_subplot(2,3,1)
+        ax2 = fg.add_subplot(2,3,2, projection=periodic_projection)
+        ax3 = fg.add_subplot(2,3,3, projection=periodic_projection)
+        ax4 = fg.add_subplot(2,3,4)
+        ax5 = fg.add_subplot(2,3,5, projection=periodic_projection)
+        ax6 = fg.add_subplot(2,3,6, projection=periodic_projection)
         axs = [ax1, ax2, ax3, ax4, ax5, ax6]
         #
         #qs = [.45, .5, .55]
@@ -1344,21 +1344,6 @@ class SACCT_data_direct(SACCT_data_handler):
             #
         #
         options += [('delimiter', '"{}"'.format(delim))]
-        
-        #
-        # process start_/end_date
-        if isinstance(start_date, str):
-            start_date = str2date(start_date)
-        if isinstance(end_date, str):
-            end_date = str2date(end_date)
-        #
-        #print('*** ', start_date, type(start_date), end_date, type(end_date))
-        #
-        start_end_times = [(start_date, min(start_date + dtm.timedelta(days=delta_t_days), end_date))]
-        while start_end_times[-1][1] < end_date:
-            start_end_times += [[start_end_times[-1][1], min(start_end_times[-1][1] + dtm.timedelta(days=30), end_date) ]]
-        #
-        self.start_end_times = start_end_times
         #
         options_str=''
         for (op,vl) in options:
@@ -1371,10 +1356,32 @@ class SACCT_data_direct(SACCT_data_handler):
                     options_str += f' --{op}={vl} '
             #
         #
+        
+        ######################
+        # process start_/end_date
+        if end_date is None or end_date == '':
+            end_date = dtm.datetime.now().date()
+        if start_date is None or start_date == '':
+            start_date = end_date - dtm.timedelta(days=180)
+        #
+        if isinstance(start_date, str):
+            start_date = str2date(start_date)
+        if isinstance(end_date, str):
+            end_date = str2date(end_date)
+        #
+        #print('*** ', start_date, type(start_date), end_date, type(end_date))
+        #
+        start_end_times = [(start_date, min(start_date + dtm.timedelta(days=delta_t_days), end_date))]
+        while start_end_times[-1][1] < end_date:
+            start_end_times += [[start_end_times[-1][1], min(start_end_times[-1][1] + dtm.timedelta(days=30), end_date) ]]
+        #
+        self.start_end_times = start_end_times
+        ##########################
+        #
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         #
         print('*** DEBUG: Now execute load_sacct_data()')
-        self. data = self.load_sacct_data(options_str=options_str, format_string=format_string)
+        self.data = self.load_sacct_data(options_str=options_str, format_string=format_string)
         #
         print('*** DEBUG: load_sacct_data() executed. Compute calc_jobs_summary()')
         #self.jobs_summary=self.calc_jobs_summary(data)
