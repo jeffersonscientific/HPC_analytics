@@ -1706,7 +1706,6 @@ class SACCT_groups_analyzer_report(object):
     fig_size=(10,8), verbose=1):
 
         # make some slides, including all the breakdown.
-        # TODO: wrap this up into a class or function in HPC_lib.
         # inputs: SACCT_data_handler object, groups-dict/JSON,  output_path, cosmetics (like line width, etc.)
         #
         if qs is None:
@@ -2424,6 +2423,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
 #        #dtype_dict = {ky:val for ky,vl in data.dtype}
     #
     n_cpu = (n_cpu or 1)
+    #print('*** DEBUG n_cpu: {}'.format(n_cpu))
     if verbose:
         print('*** computing jobs_summary func on {} cpu'.format(n_cpu))
     #
@@ -2458,7 +2458,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         # ks should be a list of indices between 0 and len+1. This process still needs a little bit of work
         #  to guarantee subsets are not too long/short, etc. but this much should work
         #
-        n_cpu = min(n_cpu, len(ks)-1)
+        n_cpu = max(1, min(n_cpu, len(ks)-1))
         #
         # Traditional open(), close(), join() syntax here. This gives the same performance as the context handler syntax, though the cpu monitor behaves
         #  very differently -- at least on a Mac. The context manager seems to confuse OS-X perception of user vs system use, and a couple other things too.
@@ -2563,6 +2563,10 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     # stash a copy of input prams:
     inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
     n_cpu = (n_cpu or 1)
+    cpuh_dtype = [('time', '>f8'),
+        ('t_start', '>f8'),
+        ('cpu_hours', '>f8'),
+        ('N_jobs', '>f8')]
     #
     # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something)
     #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
@@ -2581,10 +2585,6 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     if verbose:
         print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
     #
-    cpuh_dtype = [('time', '>f8'),
-        ('t_start', '>f8'),
-        ('cpu_hours', '>f8'),
-        ('N_jobs', '>f8')]
     #
     t_start = jobs_summary['Start']
     t_end = jobs_summary['End'].copy()
@@ -2705,7 +2705,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     mpp_chunksize = mpp_chunksize or 1000
     n_cpu = n_cpu or 1
     #
-    if jobs_summary is None:
+    if jobs_summary is None or len(jobs_summary) == 0:
         return null_return()
     #
     if t_now is None:
