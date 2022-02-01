@@ -493,7 +493,7 @@ class SACCT_data_handler(object):
         # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
         return pandas.DataFrame(data, columns=active_headers).to_records()
         #
-    @numba.jit
+    #@numba.jit
     def process_row(self, rw, headers=None, RH=None):
         # use this with MPP processing:
         # ... but TODO: it looks like this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
@@ -882,7 +882,7 @@ class SACCT_data_handler(object):
         #r_val = numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
         #print('*** return from[{}], sh={} ** {}'.format(os.getpid(), r_val.shape, r_val[0][0:10]))
         return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
-    @numba.jit
+    #@numba.jit
     #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
     def process_ajc_row(self, t):
         # DEPRICATION: moving this outside the class definition to better facilitate MPP and development.
@@ -1402,6 +1402,10 @@ class SACCT_data_direct(SACCT_data_handler):
         start_end_times = start_end_times or self.start_end_times
         sacct_str_template = self.sacct_str_template
         #
+        # for reference, stash a copy of the ideal sacct str (ie, with full date range)
+        self.sacct_str = sacct_str_template.format(options_str, datetime_to_SLURM_datestring(start_end_times[0][0]),
+                                    datetime_to_SLURM_datestring(start_end_times[-1][-1]), format_string )
+        #
         if n_cpu == 1:
             sacct_out = None
             for k, (start, stop) in enumerate(start_end_times):
@@ -1874,10 +1878,15 @@ class SACCT_groups_analyzer_report(object):
     #
 #
 class SACCT_groups_analyzer_report_handler(object):
+    '''
+    # As best as I can tell, this is intended to be a generalized extension of the earlier SACCT_groups_analyzer_report() class, but designed
+    # to host multiple report types. Reports can nominally be run externally (eg, create this object, then execute plot functions --
+    # both internal to this Class or external, and add slides to a report, or reports can be coded into the class itself.
+    '''
     #
     def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
                  out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', n_points_wkly_hrs=500,
-                 fig_width_tex='.8', qs=[.45, .5, .55], fig_size=(10,8), SACCT_obj=None, max_rws=None ):
+                 fig_width_tex='.8', qs=[.45, .5, .55], fig_size=(10,8), SACCT_obj=None, TEX_obj=None, max_rws=None ):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
         #print('*** DEBUG: __init__: {}'.format(self.out_path))
@@ -1885,10 +1894,13 @@ class SACCT_groups_analyzer_report_handler(object):
         #if self.groups is None:
         #    self.groups={'All':list(set(SACCT_obj.jobs_summary['User']))}
         #
-        self.HPC_tex_obj = Tex_Slides(Short_title=self.Short_title,
-                 Full_title=self.Full_title,
-        foutname=os.path.join(out_path, tex_filename))
+        #self.HPC_tex_obj = Tex_Slides(Short_title=self.Short_title,
+        #         Full_title=self.Full_title,
+        #         foutname=os.path.join(out_path, tex_filename))
         #
+        self.HPC_tex_obj = (TEX_obj or Tex_Slides(Short_title=self.Short_title,
+                 Full_title=self.Full_title,
+                 foutname=os.path.join(out_path, tex_filename)) )
     #
     def standard_reports_slides(self, ix=None, out_path=None, group_name='group', qs=None, fig_width_tex=None ):
         '''
@@ -1905,7 +1917,7 @@ class SACCT_groups_analyzer_report_handler(object):
             out_path =self.out_path
             #out_path = os.path.join(self.out_path, 'figs')
         out_path_figs = os.path.join(out_path, 'figs')
-        
+        #
         if not os.path.isdir(out_path_figs):
             os.makedirs(out_path_figs)
         #
@@ -1948,7 +1960,6 @@ class SACCT_groups_analyzer_report_handler(object):
         self.HPC_tex_obj.add_fig_slide(fig_title='{}: Periodic Clock-Plots'.format(group_name_tex),
             width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, periodic_figname_polar))
         #
-    #
     #
     def activity_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, n_points_wkly_hrs=None, group_name='group', verbose=0):
         # images then slides for just one group, which we define from an index.
@@ -2382,12 +2393,14 @@ def array_to_hdf5_dataset(input_array, dataset_name, output_fname='outfile.h5', 
 def fix_to_ascii(s):
     if s is None:
         return ''
+    if isinstance(s,bytes):
+        s = s.decode()
     #
     # TODO: better string handling please...
-    #chrs = [[8211, '--'],]
-    chrs = {8211:'--', 2013:'_'}
+    chrs = {8211:'--', 2013:'_', 8722:'-'}
+    #
     for k,c in chrs.items():
-        #print('** chrs:', k,c,s)
+        #
         s = s.replace(chr(k),c)
     #
     # rigorously,we might need something like this:
