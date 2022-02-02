@@ -34,6 +34,7 @@ day_2_sec=24.*3600.
 #
 mazama_groups_ids = ['tgp', 'sep', 'clab', 'beroza', 'lnt', 'ds', 'nsd', 'oxyvibtest', 'cardamom', 'crustal', 'stress', 'das', 'ess', 'astro', 'seaf', 'oneill', 'modules', 'wheel', 'ds2', 'shanna', 'issm', 'fs-uq-zechner', 'esitstaff', 'itstaff', 'sac-eess164', 'sac-lab', 'sac-lambin', 'sac-lobell', 'fs-bpsm', 'fs-scarp1', 'fs-erd', 'fs-sedtanks', 'fs-sedtanks-ro', 'fs-supria', 'web-rg-dekaslab', 'fs-cdfm', 'suprib', 'cees', 'suckale', 'schroeder', 'thomas', 'ere', 'smart_fields', 'temp', 'mayotte-collab']
 #
+# TODO: LOTS more serc_user ids!
 serc_user_ids = ['biondo', 'beroza', 'sklemp', 'harrisgp', 'gorelick', 'edunham', 'sagraham', 'omramom', 'aditis2', 'oneillm', 'jcaers', 'mukerji', 'glucia', 'tchelepi', 'lou', 'segall', 'horne', 'leift']
 user_exclusions = ['myoder96', 'dennis']
 group_exclusions = ['modules']
@@ -59,6 +60,11 @@ def str2date_num(dt_str, verbose=0):
 def simple_date_string(dtm, delim='-'):
     # TODO: replace str() call with a proper .encode(), maybe .encode('utf-8') ?
     return delim.join([str(x) for x in [dtm.year, dtm.month, dtm.day]])
+    
+def datetime_to_SLURM_datestring(dtm, delim='-'):
+    zf = lambda x:str(x).zfill(2)
+    #
+    return '{}T{}:{}:{}'.format(delim.join([str(x) for x in [dtm.year, zf(dtm.month), zf(dtm.day)]]), zf(dtm.hour), zf(dtm.minute), zf(dtm.second))
 #
 #@numba.jit
 def elapsed_time_2_day(tm_in, verbose=0):
@@ -130,10 +136,18 @@ def elapsed_time_2_sec_v(tm_in, verbose=0):
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
 #
+def write_sacct_batch_script():
+    '''
+    # write a sacct request. Since this is so fast on Sherlock, let's split this into the sacct request and the batch script. we'll probably
+    #  not batch the sacct separately.
+    '''
+    return None
 #
 class SACCT_data_handler(object):
     #
     # TODO: write GRES (gpu, etc. ) handler functions.
+    # TODO: add real-time options? to get sacct data in real time; we can still stash it into a file if we need to, but
+    #   more likely a varriation on load_sacct_data() that executes the sacct querries, instead of loading a file.
     dtm_handler_default = str2date_num
     #
     #default_types_dict = default_SLURM_types_dict
@@ -150,8 +164,8 @@ class SACCT_data_handler(object):
     time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
     #
     #
-    def __init__(self, data_file_name, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
-                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None):
+    def __init__(self, data_file_name=None, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
+                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None, **kwargs):
         '''
         # handler object for sacct data.
         #
@@ -159,6 +173,9 @@ class SACCT_data_handler(object):
         #  requirements, But for starters, let's optinally dump the raw data. we shouldn't actually need it for
         #  anything we're doing right now. if it comes to it, maybe we dump it as an HDF5 or actually build a DB of some sort.
         '''
+        # TODO: reorganize a bit. Consolidate load_data() functionality into... a function, which we can rewrite
+        #  for each sub-class. Then we can either similarly offload the calc_summaries() type work to a separate
+        #  function or leave them in __init__() where they probably belong.
         #
         n_cpu = n_cpu or 1
         #
@@ -171,6 +188,44 @@ class SACCT_data_handler(object):
             types_dict=self.default_types_dict
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        #
+        self.load_data()
+        #
+        if h5out_file is None:
+            h5out_file='sacct_output.h5'
+        self.h5out_file = h5out_file
+        #
+        self.headers = self.data.dtype.names
+        # row-headers index:
+        self.RH = {h:k for k,h in enumerate(self.headers)}
+        self.calc_summaries()
+        #
+    #
+    def calc_summaries(self, n_cpu=None, chunk_size=None):
+        #
+        n_cpu = n_cpu or self.n_cpu
+        n_points_usage = self.n_points_usage
+        chunk_size = chunk_size or self.chunk_size
+        #
+        self.jobs_summary = self.calc_jobs_summary()
+        if not self.keep_raw_data:
+            del self.data
+        #
+        #self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        #
+        # TODO: (re-)parallelize this...?? running continuously into problems with pickled objects being too big, so
+        #   we need to be smarter about how we parallelize. Also, parallelization is just costing a lot of memory (like 15 GB/CPU -- which
+        #   seems too much, so could be a mistake, but probalby not, since I'm pretty sure I ran a smilar job in SPP on <8GB).
+        
+        self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
+        self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
+        self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
+        #
+
+    #
+    def load_data(self, data_file_name=None):
+        #
+        data_file_name = (data_file_name or self.data_file_name)
         #
         # especially for dev, allow to pass the recarray object itself...
         if isinstance(data_file_name, str):
@@ -188,74 +243,7 @@ class SACCT_data_handler(object):
         else:
             self.data = data_file_name
             #self.data = self.data_df.values.to_list()
-        if h5out_file is None:
-            h5out_file='sacct_output.h5'
-        self.h5out_file = h5out_file
         #
-        self.headers = self.data.dtype.names
-        # row-headers index:
-        self.RH = {h:k for k,h in enumerate(self.headers)}
-        #
-        # local shorthand:
-        data = self.data
-        #
-        jobs_summary = self.calc_jobs_summary()
-        # BEGIN old jobs_summary code:
-#        ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in self.data['JobID']])
-#        #
-#        #job_ID_index = {ss:[] for ss in numpy.unique([s.split('.')[0]
-#        #                                            for s in self.data['JobID'][ix_user_jobs] ])}
-#        #
-#        # this might be faster to get the job_ID_index since it only has to find the first '.':
-#        job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
-#                                                    for s in self.data['JobID'][ix_user_jobs] ])}
-#        #
-#        #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
-#        for k,s in enumerate(self.data['JobID_parent']):
-#            job_ID_index[s] += [k]
-#        #
-#        #
-#        if verbose:
-#            print('Starting jobs_summary...')
-#        # we should be able to MPP this as well...
-#        jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
-#        t_now = mpd.date2num(dtm.datetime.now())
-#        for k, (j_id, ks) in enumerate(job_ID_index.items()):
-#            jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
-#            #
-#            # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
-#            #  use their index position, rather than min()/max()... but we'd need to be more careful about
-#            #. that sorting step, and upstream dependencies are dangerous...
-#            # NOTE: might be faster to index eact record, aka, skip sub_data and for each just,
-#            #. {stuff} = max(data['End'][ks])
-#            #
-#            sub_data = data[sorted(ks)]
-#            #
-#            #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
-#            jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
-#            jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
-#            jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
-#            jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
-#        #
-#        del sub_data
-#        #
-#        if verbose:
-#            print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
-        #
-        # END old jubs_summary code
-        #
-        if not keep_raw_data:
-            del data
-        #
-        #
-        self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
-        #
-        # TODO: (re-)parallelize this...?? running continuously into problems with pickled objects being too big, so
-        #   we need to be smarter about how we parallelize. Also, parallelization is just costing a lot of memory (like 15 GB/CPU -- which
-        #   seems too much, so could be a mistake, but probalby not, since I'm pretty sure I ran a smilar job in SPP on <8GB).
-        self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
-        self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
-        self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
     #
     def write_hdf5(self, h5out_file=None, append=False):
         h5out_file = h5out_file or self.h5out_file
@@ -395,14 +383,15 @@ class SACCT_data_handler(object):
             # use a buffer
             sub_data = data[sorted(ks)]
             #
-            #jobs_summary[k]['End'] = numpy.max(sub_data['End'])
+            # was there a reason to Not use nanmnax() for NCPUS and NNodes? I seem to remember there was... some way
+            #  that nanmax/min() misbehaves...
             jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
             jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
-            jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
-            jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
+            jobs_summary[k]['NCPUS'] = numpy.nanmax(sub_data['NCPUS'])
+            jobs_summary[k]['NNodes'] = numpy.nanmax(sub_data['NNodes'])
             #
             # aggregate on NTasks? The first row should be NTasks for the submitted job
-            #jobs_summary[k]['NTasks'] = numpy.nanmax(sub_data['NTasks'])
+            jobs_summary[k]['NTasks'] = numpy.nanmax(sub_data['NTasks'])
             #
             # move this into the loop. weird things can happen with buffers...
             del sub_data
@@ -416,6 +405,7 @@ class SACCT_data_handler(object):
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
         # TODO: this should probably be a class of its own. Note that it depends on a couple of class-scope functions in
         #  ways that are not really class hierarchically compatible.
+        # TODO: add capability to execute sacct queries. This is not practical on Mazama, but very feasible on Mazama.
         if data_file_name is None:
             data_file_name = self.data_file_name
         if delim is None:
@@ -428,11 +418,6 @@ class SACCT_data_handler(object):
         # mpp.cpu_count() is dangerous for HPC environments. So set to 1? Maybe hedge and guess 2 or 4 (we can hyperthread a bit)?
         #n_cpu = n_cpu or mpp.cpu_count()
         n_cpu = n_cpu or 1
-        #
-        # have not yet figured out how to make max_rows work with MPP (probably just need to load the data to an array, then process)
-        #, so for now force it to SPP:
-#        if not max_rows is None:
-#            n_cpu = 1
         #
         if verbose:
             print('** load_sact_data(), max_rows={}'.format(max_rows))
@@ -463,13 +448,17 @@ class SACCT_data_handler(object):
                 P = mpp.Pool(n_cpu)
                 #self.headers = headers
                 #
-                # TODO: how do we make this work with max_rows limit?
+                # TODO: how do we make this work with mpp and max_rows limit? This could be less of a problem on newer
+                #  HPC systems.
                 # see also: https://stackoverflow.com/questions/16542261/python-multiprocessing-pool-with-map-async
                 # for the use of P.map(), using a context manager and functools.partial()
                 # TODO: use an out-of-class variation of process_row() (or maybe the whole function), or modify the in-class so MPP does not need
                 #   to pickle over the whole object, which breaks for large data sets. tentatively, use apply_async() and just pass
                 #   headers, types_dict, and RH.
                 #   def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={})
+                # TODO: to enforce maxrows, why not just use fin.read() (and a few more small changes)?
+                #  Could be that we're just running out of memory on Mazama, or we're trying to benefit from parallel file
+                #  read.
                 if max_rows is None:
                     results = P.map_async(self.process_row, fin, chunksize=chunk_size)
                 else:
@@ -501,26 +490,24 @@ class SACCT_data_handler(object):
             print('** load_sacct_data::len: ', len(data))
             self.raw_data_len = len(data)
         #
-        #self.data=data
-        # TODO: asrecarray()?
-        #self.data = pandas.DataFrame(data, columns=active_headers).to_records()
-        #return data
-        #
         # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
         return pandas.DataFrame(data, columns=active_headers).to_records()
         #
-    @numba.jit
-    def process_row(self, rw):
+    #@numba.jit
+    def process_row(self, rw, headers=None, RH=None):
         # use this with MPP processing:
         # ... but TODO: it looks like this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
         #  class object... so we need to move the MPP object out of class.
         #
+        headers = (headers or self.headers)
+        RH      = (RH or self.RH)
         # use this for MPP processing:
         rws = rw.split(self.delim)
+        #print('*** DEBUG lens: ', len(rws), len(headers))
         #return [None if vl=='' else self.types_dict.get(col,str)(vl)
         #            for k,(col,vl) in enumerate(zip(self.headers, rw.split(self.delim)[:-1]))]
         return [None if vl=='' else self.types_dict.get(col,str)(vl)
-                    for k,(col,vl) in enumerate(zip(self.headers, rws[:-1]))] + [rws[self.RH['JobID']].split('.')[0]]
+                    for k,(col,vl) in enumerate(zip(headers, rws[:-1]))] + [rws[RH['JobID']].split('.')[0]]
     #
     # GIT Note: Deleting the depricated get_cpu_hours_2() function here. It can be recovered from commits earlier than
     #  31 Aug 2020.
@@ -895,7 +882,7 @@ class SACCT_data_handler(object):
         #r_val = numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
         #print('*** return from[{}], sh={} ** {}'.format(os.getpid(), r_val.shape, r_val[0][0:10]))
         return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
-    @numba.jit
+    #@numba.jit
     #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
     def process_ajc_row(self, t):
         # DEPRICATION: moving this outside the class definition to better facilitate MPP and development.
@@ -1138,12 +1125,12 @@ class SACCT_data_handler(object):
         #
         fg = plt.figure(figsize=figsize)
         #
-        ax1 = fg.add_subplot('231')
-        ax2 = fg.add_subplot('232', projection=periodic_projection)
-        ax3 = fg.add_subplot('233', projection=periodic_projection)
-        ax4 = fg.add_subplot('234')
-        ax5 = fg.add_subplot('235', projection=periodic_projection)
-        ax6 = fg.add_subplot('236', projection=periodic_projection)
+        ax1 = fg.add_subplot(2,3,1)
+        ax2 = fg.add_subplot(2,3,2, projection=periodic_projection)
+        ax3 = fg.add_subplot(2,3,3, projection=periodic_projection)
+        ax4 = fg.add_subplot(2,3,4)
+        ax5 = fg.add_subplot(2,3,5, projection=periodic_projection)
+        ax6 = fg.add_subplot(2,3,6, projection=periodic_projection)
         axs = [ax1, ax2, ax3, ax4, ax5, ax6]
         #
         #qs = [.45, .5, .55]
@@ -1219,7 +1206,7 @@ class SACCT_data_handler(object):
             #ax.set_xticks(numpy.arange(0,8)*weekly_Period)
             
             ax.set_xticks(cpu_weekly['x']*weekly_Period)
-            ax.set_xticklabels(['sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
+            ax.set_xticklabels(['sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][0:len(cpu_weekly['x'])])
             
             #ax.set_xticklabels(['', 'sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
             #ax.grid()
@@ -1311,21 +1298,37 @@ class SACCT_data_handler(object):
             #
             if k>10:break
         #
+        return distributions
     #
 
 class SACCT_data_direct(SACCT_data_handler):
     format_list_default = ['User', 'Group', 'GID', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
-               'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqGRES', 'AllocGRES', 'ReqTRES',
-               'AllocTRES']
-    def __init__(self, group=None, partition=None, delimiter='|', start_date=None, end_date=None, more_options=[], delta_t_days=30,
-        format_list=None, verbose=0):
+               'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES']
+    def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=30,
+        format_list=None, n_cpu=None, types_dict=None, verbose=0, chunk_size=1000,
+        h5out_file=None, keep_raw_data=False, n_points_usage=1000,
+        **kwargs):
         #
-        self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
+        # TODO: this is a mess. I think it needs to be a bit nominally sloppier, then cleaner -- so maybe read the first block,
+        #  characterize the data, then process the rest of the elements, or read the data (in parallel), then process in parallel.
+        #  rather than trying to do it all in one call...
+        #  TODO: wrap all the data loading into a data_load() function, which will need to be nullified to not inherit\
+        #   from the parent class.
+        #
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
         options = [tuple(rw) if len(rw)>=2 else (rw,None) for rw in more_options]
+        options += [tuple((ky[6:],vl)) for ky,vl in kwargs.items() if ky.lower().startswith('sacct_')]
+        sacct_str_template = 'sacct {} -p --allusers --starttime={} --endtime={} --format={} '
         #
-        format_list = format_list or format_list_default
+        if types_dict is None:
+            types_dict=self.default_types_dict
+        #
+        format_list = format_list or self.format_list_default
         format_string = ','.join(format_list)
+        #
+        n_cpu = n_cpu or min(6, mpp.cpu_count() )
         #
         if not group is None:
             options += [('group', group)]
@@ -1340,62 +1343,167 @@ class SACCT_data_direct(SACCT_data_handler):
                 print('** Warning: delta_t_days input not valid. set to default value={}'.format(delta_t_days))
             #
         #
-        options += [('delimiter', '"{}"'.format(delimiter))]
-        
+        options += [('delimiter', '"{}"'.format(delim))]
         #
-        # process start_/end_date
-        if isinstance(start_date, str):
-            start_date = str2date(start_date)
-        if instance(end_date, str):
-            end_date = str2date(end_date)
-        #
-        start_end_times = [(start_date, min(start_date + dtm.timedelta(days=delta_t_days), end_date))]
-        while start_end_times[-1][1] < end_time:
-            start_end_times += [[start_end_times[-1][1], min(start_end_times[-1][1] + dtm.timedelta(days=30), end_date) ]]
-        #
+        options_str=''
         for (op,vl) in options:
             if vl is None:
-                options_str += '--{}'.format(op)
+                options_str += f'-{op}'
             else:
-                options_str += ' --{}={} '.format(op,vl)
+                if len(op)==1:
+                    options_str += f' -{op} {vl} '
+                elif len(op)>1:
+                    options_str += f' --{op}={vl} '
             #
+        #
+        
+        ######################
+        # process start_/end_date
+        if end_date is None or end_date == '':
+            end_date = dtm.datetime.now().date()
+        if start_date is None or start_date == '':
+            start_date = end_date - dtm.timedelta(days=180)
+        #
+        if isinstance(start_date, str):
+            start_date = str2date(start_date)
+        if isinstance(end_date, str):
+            end_date = str2date(end_date)
+        #
+        #print('*** ', start_date, type(start_date), end_date, type(end_date))
+        #
+        start_end_times = [(start_date, min(start_date + dtm.timedelta(days=delta_t_days), end_date))]
+        while start_end_times[-1][1] < end_date:
+            start_end_times += [[start_end_times[-1][1], min(start_end_times[-1][1] + dtm.timedelta(days=30), end_date) ]]
+        #
+        self.start_end_times = start_end_times
+        ##########################
         #
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         #
-        data = self.load_sacct_data()
-    def load_sacct_data(self, n_cpu=None):
+        print('*** DEBUG: Now execute load_sacct_data()')
+        self.data = self.load_sacct_data(options_str=options_str, format_string=format_string)
+        #
+        print('*** DEBUG: load_sacct_data() executed. Compute calc_jobs_summary()')
+        #self.jobs_summary=self.calc_jobs_summary(data)
+        #
+        super(SACCT_data_direct, self).__init__(delim=delim, start_date=start_date, end_date=end_date, h5out_file=h5out_file, keep_raw_data=keep_raw_data,n_points_usage=n_points_usage, n_cpu=n_cpu, types_dict=types_dict, verbose=verbose, chunk_size=chunk_size, **kwargs)
+        #
+        #del data
+        self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
+    #
+    def load_data(self, *args, **kwargs):
+        pass
+    #
+    def load_sacct_data(self, options_str='', format_string='', n_cpu=None, start_end_times=None, max_rows=None, verbose=False):
         #
         n_cpu = n_cpu or self.n_cpu
         n_cpu = n_cpu or 4
         #
-        sacct_output = ''
-        for k, (start, stop) in enumerate(start_end_times):
-            sacct_str = 'srun sacct {} {} -p --starttime={} --endtime={} --format={} '.format( ('--noheader' if k>0 else ''),
-                                    options_str, start, stop, format_string )
-            #
-            #sacct_str_list = sacct_str.split()
-            print('** [{}]: {}\n'.format(k, sacct_str))
-            #
-            #S = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE)
-            # TODO: parallelize...
-            
-            sacct_out += subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode()
+        start_end_times = start_end_times or self.start_end_times
+        sacct_str_template = self.sacct_str_template
         #
-        self.jobs_summary=self.calc_jobs_summary(sacct_out)
-#
-    def get_and_process_sacct_data(self, sacct_str, max_rows=None, delim=None):
+        # for reference, stash a copy of the ideal sacct str (ie, with full date range)
+        self.sacct_str = sacct_str_template.format(options_str, datetime_to_SLURM_datestring(start_end_times[0][0]),
+                                    datetime_to_SLURM_datestring(start_end_times[-1][-1]), format_string )
+        #
+        if n_cpu == 1:
+            sacct_out = None
+            for k, (start, stop) in enumerate(start_end_times):
+                #sacct_str = 'srun sacct {} {} -p --allusers --starttime={} --endtime={} --format={} '.format( ('--noheader' if k>0 else ''),
+                #                        options_str, datetime_to_SLURM_datestring(start),
+                #                        datetime_to_SLURM_datestring(stop), format_string )
+                sacct_str = sacct_str_template.format(options_str, datetime_to_SLURM_datestring(start),
+                                    datetime_to_SLURM_datestring(stop), format_string )
+                #
+                if verbose: print('** [{}]: {}\n'.format(k, sacct_str))
+                #
+                #sacct_out += subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode()
+                if sacct_out is None:
+                    sacct_out = self.get_and_process_sacct_data(sacct_str)
+                else:
+                    # will appending work, or do we need to handle the headers, etc. in a more sophisticated way? This is still
+                    #  inefficient; there is a bit of copying, etc. that should be optimized later.
+                    sacct_out = numpy.append(sacct_out, self.get_and_process_sacct_data(sacct_str) )
+        else:
+            # TODO: consolidate spp,mpp methods...
+            with mpp.Pool(n_cpu) as P:
+                R = []
+                for k, (start, stop) in enumerate(start_end_times):
+                    sacct_str = sacct_str_template.format(
+                        options_str, datetime_to_SLURM_datestring(start),
+                        datetime_to_SLURM_datestring(stop), format_string )
+                    #
+                    kw_prams = {'sacct_str':sacct_str, 'delim':self.delim, 'with_headers':True,'as_dict':False }
+                    if not max_rows is None:
+                        kw_prams['max_rows'] = int(numpy.ceil(max_rows/n_cpu))
+                    #
+                    if verbose: print('*** DEBUG: len: ', len(sacct_str))
+                    R += [P.apply_async(self.get_and_process_sacct_data, kwds=kw_prams )]
+                #
+                # is this the right syntax?
+                Rs = [r.get() for r in R]
+            #
+            #sacct_out = Rs[0]
+            len_total = numpy.sum([len(x) for x in Rs])
+            sacct_out = numpy.zeros((len_total, ), dtype=Rs[0].dtype)
+            self.headers = sacct_out.dtype.names
+            k0=0
+            for k,R in enumerate(Rs):
+                n = len(R)
+                for col in R.dtype.names:
+                    sacct_out[col][k0:k0+n][:]=R[col]
+                #
+                k0+=n
+            #
+        #
+        
+        #
+        return sacct_out
+    #
+    def get_and_process_sacct_data(self, sacct_str='', max_rows=None, delim=None, with_headers=True, as_dict=False, verbose=False):
+        '''
+        # fetch and pre-process data from a sacct query (scct_str). Use this by itself or as a worker function.
+        # @with_headers: return with headers, as a recarray or structured array, or similar, or just as a block of data.
+        # maybe return an object like {'headers':headers 'data':data} ???
+        # @with_headers and @as_dict are sort of a confusing mess, but it's what we have for now, and it makes sense when you're
+        #   trying to do multiprocessing.:
+        #  with_headers==True && as_dict==True: returns dict {'headers':headers, 'data':data}
+        #  with_headers==True && as_dict==False: default config, returns a recordarray()
+        #  with_headers==False: returns just the data as a list.
+        '''
+        #
         if delim is None:
             delim = self.delim
         if delim is None:
             delim = '|'
         #
-        sacct_output = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode()
-        headers = sacct_output[0][:-1].split(delim)[:-1] + ['JobID_parent']
+        # NOTE: instead of scctt_str.split(), we can just use the shell=True option.
+        sacct_output = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
+        #print('** ', sacct_str)
+        if '--nohheader' in sacct_str:
+            headers = [str(k) for k,x in enumerate( numpy.arange(sacct_output[0][:-1].split(delim)) )]
+        else:
+            headers = sacct_output[0][:-1].replace('\"', '').split(delim)[:-1] + ['JobID_parent']
+        #
+        if verbose:
+            print('*** DEBUG: len(sacct_output): {}'.format(len(sacct_output)))
+            print('*** DEGBUG: headers[{}]: {}'.format(len(headers), headers))
         RH = {h:k for k,h in enumerate(headers)}
         #
-        data = [self.process_row(rw) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) ]
+        data = [self.process_row(rw.replace('\"', ''), headers=headers, RH=RH) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) and len(rw)>1 ]
         # pandas.DataFrame(data, columns=active_headers).to_records()
-
+        #
+        # this is a bit of a hack, but it should help with MPP.
+        #
+        if with_headers:
+            # TODO: write a to_records() handler, so we don't need to use stupid PANDAS
+            if as_dict:
+                return {'headers':headers, 'data':data}
+            else:
+                return pandas.DataFrame(data, columns=headers).to_records()
+        else:
+            return data
+        
         #
     
 class SACCT_data_from_h5(SACCT_data_handler):
@@ -1602,7 +1710,6 @@ class SACCT_groups_analyzer_report(object):
     fig_size=(10,8), verbose=1):
 
         # make some slides, including all the breakdown.
-        # TODO: wrap this up into a class or function in HPC_lib.
         # inputs: SACCT_data_handler object, groups-dict/JSON,  output_path, cosmetics (like line width, etc.)
         #
         if qs is None:
@@ -1691,7 +1798,7 @@ class SACCT_groups_analyzer_report(object):
             ax1a.plot(act_jobs['time'], act_jobs['N_cpu'], ls='--', lw=2., marker='', color='m',
                       label='CPUs', alpha=.5)
             #ax1a.set_title('Group: {}'.format(ky))
-            fg.suptitle('Groaup: {}'.format(ky), size=16)
+            fg.suptitle('Group: {}'.format(ky), size=16)
             ax1a.set_title('Active Jobs, CPUs')
             #
             ax2.plot(wkly_hrs['time'], wkly_hrs['cpu_hours']/7., ls='-', marker='.', label='bins=7 day', zorder=11)
@@ -1771,10 +1878,15 @@ class SACCT_groups_analyzer_report(object):
     #
 #
 class SACCT_groups_analyzer_report_handler(object):
-
+    '''
+    # As best as I can tell, this is intended to be a generalized extension of the earlier SACCT_groups_analyzer_report() class, but designed
+    # to host multiple report types. Reports can nominally be run externally (eg, create this object, then execute plot functions --
+    # both internal to this Class or external, and add slides to a report, or reports can be coded into the class itself.
+    '''
+    #
     def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
                  out_path='output/HPC_analytics', tex_filename='HPC_analytics.tex', n_points_wkly_hrs=500,
-                 fig_width_tex='.8', qs=[.45, .5, .55], fig_size=(10,8), SACCT_obj=None, max_rws=None ):
+                 fig_width_tex='.8', qs=[.45, .5, .55], fig_size=(10,8), SACCT_obj=None, TEX_obj=None, max_rws=None ):
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ('self', '__class__')})
         #print('*** DEBUG: __init__: {}'.format(self.out_path))
@@ -1782,10 +1894,13 @@ class SACCT_groups_analyzer_report_handler(object):
         #if self.groups is None:
         #    self.groups={'All':list(set(SACCT_obj.jobs_summary['User']))}
         #
-        self.HPC_tex_obj = Tex_Slides(Short_title=self.Short_title,
-                 Full_title=self.Full_title,
-        foutname=os.path.join(out_path, tex_filename))
+        #self.HPC_tex_obj = Tex_Slides(Short_title=self.Short_title,
+        #         Full_title=self.Full_title,
+        #         foutname=os.path.join(out_path, tex_filename))
         #
+        self.HPC_tex_obj = (TEX_obj or Tex_Slides(Short_title=self.Short_title,
+                 Full_title=self.Full_title,
+                 foutname=os.path.join(out_path, tex_filename)) )
     #
     def standard_reports_slides(self, ix=None, out_path=None, group_name='group', qs=None, fig_width_tex=None ):
         '''
@@ -1802,7 +1917,7 @@ class SACCT_groups_analyzer_report_handler(object):
             out_path =self.out_path
             #out_path = os.path.join(self.out_path, 'figs')
         out_path_figs = os.path.join(out_path, 'figs')
-        
+        #
         if not os.path.isdir(out_path_figs):
             os.makedirs(out_path_figs)
         #
@@ -1845,7 +1960,6 @@ class SACCT_groups_analyzer_report_handler(object):
         self.HPC_tex_obj.add_fig_slide(fig_title='{}: Periodic Clock-Plots'.format(group_name_tex),
             width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, periodic_figname_polar))
         #
-    #
     #
     def activity_figure(self, ix=None, fout_path_name=None, qs=None, fig_size=None, n_points_wkly_hrs=None, group_name='group', verbose=0):
         # images then slides for just one group, which we define from an index.
@@ -2001,12 +2115,13 @@ def get_group_users(user_id):
     #
     S = S.stdout.decode()[:-1].split(chr(32))
     S = dict([rw.split('=') for rw in S])
-    
     #
     return S
 #
-
+#
 def get_resercher_groups_dict():
+    # TODO: constraints for this? I think this was developed for Mazama. For Sherlock, we might need some secodary groups, or
+    #  some other constraint.
     sp_command = 'getent group'
     #
     sp = subprocess.run(shlex.split(sp_command), shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -2032,7 +2147,39 @@ def get_resercher_groups_dict():
         sp_out[rws[0]] = usrs
     #
     return sp_out
-    
+#
+def get_PI_groups_from_groups(groups='sh_s-ees', user_list=[]):
+    '''
+    # get a list of PI (primary) groups for all members of a secondary group. For example, get PI groups for all members of a shared partition or school.
+    # both groups are linux groups. Alternatively pass a user_list; get all unique primary groups for those users.
+    # @groups: a linux group id (or list of)
+    # @user_list: Optional. List of user IDs.
+    # the two lists will be added together.
+    '''
+    #
+    #
+    if not groups is None:
+        for sg in numpy.atleast_1d(groups):
+            #print('*** *', ' '.join(['getent', 'group', sg]))
+            user_list += subprocess.run(['getent', 'group', sg], shell=False, capture_output=True).stdout.decode().replace('\n','').split(',')
+    #
+    # Now, collect into a {PI_group:]users], ...} dict.
+    pi_groups={}
+    for usr in user_list:
+    #for pi, usr in zip([subprocess.run(['id', '--group', '--name', s], shell=False, capture_output=True).stdout() for s in user_list], user_list):
+        #print('*** usr: ', usr)
+        if "*" in usr:
+            continue
+        #
+        pi = subprocess.run(['id', '--group', '--name', usr], shell=False, capture_output=True).stdout.decode().replace('\n', '')
+        #
+        
+        if not pi in pi_groups.keys():
+            pi_groups[pi]=[]
+        #
+        pi_groups[pi] += [usr]
+    #
+    return pi_groups
 
 def get_group_members(group_id):
     '''
@@ -2041,7 +2188,8 @@ def get_group_members(group_id):
     #
     #
     #sp_command="getent group | grep {}".format(group_id)
-    sp_command = 'getent group'
+    #sp_command = f'getent group {group_id}'
+    sp_command = ['getent', 'group', group_id]
     #
     # NOTE: in order to run a complex linux command, set shell=True. Some will say, however, that this is not recommended for security -- among other, reasons.
     # https://stackoverflow.com/questions/13332268/how-to-use-subprocess-command-with-pipes
@@ -2049,12 +2197,11 @@ def get_group_members(group_id):
     #  process. For something simple, I don't see the advantage of that over just doing the grep or other operation in Python, which is a better environment for that
     #  sort of work anway. The advantage of the piped command is it is only a single call to the OS.
     #
-    #print('subprocessing with shell=True...')
-    # ...but it still breaks. likely composite subprocesses are not permitted, for security  purposes? make ssens...
-    sp = subprocess.run(shlex.split(sp_command), shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Python 3.6 might still require this syntax:
+    #sp = subprocess.run(shlex.split(sp_command), shell=False, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     #
-    
-    
+    # this should work for python 3.8 or so
+    sp = subprocess.run(sp_command, shell=False, capture_output=True)
     #
     return sp.stdout
 #
@@ -2246,12 +2393,14 @@ def array_to_hdf5_dataset(input_array, dataset_name, output_fname='outfile.h5', 
 def fix_to_ascii(s):
     if s is None:
         return ''
+    if isinstance(s,bytes):
+        s = s.decode()
     #
     # TODO: better string handling please...
-    #chrs = [[8211, '--'],]
-    chrs = {8211:'--', 2013:'_'}
+    chrs = {8211:'--', 2013:'_', 8722:'-'}
+    #
     for k,c in chrs.items():
-        #print('** chrs:', k,c,s)
+        #
         s = s.replace(chr(k),c)
     #
     # rigorously,we might need something like this:
@@ -2280,7 +2429,14 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     if data is None:
         raise Exception('No data provided.')
     #
+    # TODO: this:
+#    if hasattr(data, 'dtype'):
+#        dtype_dict = dict(list(data.dtype))
+#        # or:
+#        #dtype_dict = {ky:val for ky,vl in data.dtype}
+    #
     n_cpu = (n_cpu or 1)
+    #print('*** DEBUG n_cpu: {}'.format(n_cpu))
     if verbose:
         print('*** computing jobs_summary func on {} cpu'.format(n_cpu))
     #
@@ -2315,7 +2471,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         # ks should be a list of indices between 0 and len+1. This process still needs a little bit of work
         #  to guarantee subsets are not too long/short, etc. but this much should work
         #
-        n_cpu = min(n_cpu, len(ks)-1)
+        n_cpu = max(1, min(n_cpu, len(ks)-1))
         #
         # Traditional open(), close(), join() syntax here. This gives the same performance as the context handler syntax, though the cpu monitor behaves
         #  very differently -- at least on a Mac. The context manager seems to confuse OS-X perception of user vs system use, and a couple other things too.
@@ -2384,11 +2540,19 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #
 #        jobs_summary[k]['End'] = numpy.nanmax(sub_data['End'])
 #        jobs_summary[k]['Start'] = numpy.nanmin(sub_data['Start'])
-#        jobs_summary[k]['NCPUS'] = numpy.max(sub_data['NCPUS'])
-#        jobs_summary[k]['NNodes'] = numpy.max(sub_data['NNodes'])
+#        jobs_summary[k]['NCPUS'] = numpy.nanmax(sub_data['NCPUS'])
+#        jobs_summary[k]['NNodes'] = numpy.nanmax(sub_data['NNodes']).astype(int)
+#        jobs_summary[k]['NTasks'] = numpy.nanmax(sub_data['NTasks']).astype(int)
         #
         # This is the proper syntax (not forgiving) to assign a row:
-        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes']][k] = numpy.nanmax(sub_data['End']), numpy.nanmin(sub_data['Start']), numpy.max(sub_data['NCPUS']), numpy.max(sub_data['NNodes'])
+        # again, was there a reason to NOT use nanmax()? Might be better to make our own nanmax(), like:
+        # x = numpy.max(X[numpy.isnan(X).invert()])
+        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks']][k] = numpy.nanmax(sub_data['End']),\
+            numpy.nanmin(sub_data['Start']),\
+            numpy.nanmax(sub_data['NCPUS']).astype(int),\
+            numpy.nanmax(sub_data['NNodes']).astype(int),\
+            numpy.nanmax(sub_data['NTasks']).astype(int)
+            
         #
         # move this into the loop. weird things can happen with buffers...
         del sub_data
@@ -2412,6 +2576,10 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     # stash a copy of input prams:
     inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
     n_cpu = (n_cpu or 1)
+    cpuh_dtype = [('time', '>f8'),
+        ('t_start', '>f8'),
+        ('cpu_hours', '>f8'),
+        ('N_jobs', '>f8')]
     #
     # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something)
     #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
@@ -2430,10 +2598,6 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     if verbose:
         print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
     #
-    cpuh_dtype = [('time', '>f8'),
-        ('t_start', '>f8'),
-        ('cpu_hours', '>f8'),
-        ('N_jobs', '>f8')]
     #
     t_start = jobs_summary['Start']
     t_end = jobs_summary['End'].copy()
@@ -2554,7 +2718,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     mpp_chunksize = mpp_chunksize or 1000
     n_cpu = n_cpu or 1
     #
-    if jobs_summary is None:
+    if jobs_summary is None or len(jobs_summary) == 0:
         return null_return()
     #
     if t_now is None:
@@ -2642,13 +2806,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
                         't_end':t_end[k1:k2], 'NCPUs':jobs_summary['NCPUS'][k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
             #
             R = [r.get() for r in results]
-            # join the pool? this throws a "pool still running" error... ???
-            #P.join()
-            #
-            #print('** Shape(R): ', numpy.shape(results))
-        # Does not appear to matter if we do(not) indent the next part (aka, whether we close the Pool(). it makes sense to close (un-indent) for
-        #  consistency, but how does it affect acync. computation? experiment suggests there is no difference, but on a relatively small data set.
-        #  still can't quite explain why the SPP seems to be much much much (non-linerly) slower than mpp.
+        #  still can't quite explain why the SPP seems to be much much much (non-linerly) slower than mpp (on Mazama)
         # TODO: how do we numpy.sum(R) on the proper axis?
         for k_r, (r_nj, r_ncpu) in enumerate(R):
             #print('**** [{}]: {} ** {}'.format(k_r, r_nj[0:10], r_ncpu[0:10]))

@@ -97,6 +97,8 @@ if __name__ == '__main__':
     prams = {}
     
     if len(sys.argv)>1:
+        # TODO: consider a simpler args input handler, just use arvb[k] as orderd inputs if they do not conatin '=' and
+        #  kwds inputs if they do.
         #print('*** getting args...')
         opts,args = getopt.getopt(sys.argv[1:], 'f:p:q:n:r:', ['data_file_name=', 'pickle_in=', 'pickle_out=', 'n_cpu='])
         print('*** *** ', opts, args)
