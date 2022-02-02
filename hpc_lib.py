@@ -1122,7 +1122,6 @@ class SACCT_data_handler(object):
             daily_Period = 1.0
             weekly_Period = 1.0
         #
-        #
         fg = plt.figure(figsize=figsize)
         #
         ax1 = fg.add_subplot(2,3,1)
@@ -1136,17 +1135,25 @@ class SACCT_data_handler(object):
         #qs = [.45, .5, .55]
         qs_s = ['q_{}'.format(q) for q in qs]
         #print('*** qs_s: ', qs_s)
-
-        cpu_hourly = time_bin_aggregates(XY=numpy.array([cpu_usage['time'], 
+        #
+        cpu_hourly = time_bin_aggregates(XY=numpy.array([cpu_usage['time'],
                                                          cpu_usage['N_cpu']]).T, qs=qs)
         jobs_hourly = time_bin_aggregates(XY=numpy.array([cpu_usage['time'],
                                                           cpu_usage['N_jobs']]).T, qs=qs)
         #
+        # TODO: poorly handling the DoW here. Note, however, that
         cpu_weekly = time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
                                                          cpu_usage['N_cpu']]).T, bin_mod=7., qs=qs)
         jobs_weekly = time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
                                                           cpu_usage['N_jobs']]).T, bin_mod=7., qs=qs)
+        cpu_weekly['x'] = (cpu_weekly['x']+3)%7
+        jobs_weekly['x'] = (jobs_weekly['x']+3)%7
+        cpu_weekly.sort(order='x')
+        jobs_weekly.sort(order='x')
         #
+        # correct for UTC/PST? Still not positive this is correct:
+        # Also... I think this index is sort of a dumb way to shift the time. It would be better to just sort the array...
+        #  maybe not if you want to keep both sequences though.
         ix_pst = numpy.argsort( (jobs_hourly['x']-7)%24)
         #
         X_tmp_hr = numpy.linspace(jobs_hourly['x'][0], jobs_hourly['x'][-1]+1,200)*daily_Period
@@ -1160,8 +1167,7 @@ class SACCT_data_handler(object):
         #ax2.plot(jobs_hourly['x']*daily_Period, numpy.ones(len(jobs_hourly['x']))*numpy.mean(jobs_hourly['mean'][ix_pst]), ls='--', marker='', zorder=1, alpha=.7, label='mean', color=clr)
         ax2.plot(X_tmp_hr, numpy.ones(len(X_tmp_hr))*numpy.mean(jobs_hourly['mean'][ix_pst]), ls='--', marker='', zorder=1, alpha=.7, label='mean', color=clr)
         #
-        ax3.plot(jobs_weekly['x']*weekly_Period, jobs_weekly['q_0.5'], ls='-', marker=
-        'o', color=clr)
+        ax3.plot(jobs_weekly['x']*weekly_Period, jobs_weekly['q_0.5'], ls='-', marker='o', color=clr)
         #ax3.plot(jobs_weekly['x']*weekly_Period, jobs_weekly['mean'], ls='--', marker='', color=clr, label='mean')
         ax3.fill_between(jobs_weekly['x'], jobs_weekly[qs_s[0]], jobs_weekly[qs_s[-1]],
                          alpha=.1, zorder=1, color=clr)
@@ -1198,7 +1204,7 @@ class SACCT_data_handler(object):
         ax2.legend(loc=0)
         ax5.legend(loc=0)
         #
-        weekdays={ky:vl for ky,vl in zip(range(7), ['sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])}
+        weekdays={ky:vl for ky,vl in zip(range(7), ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])}
         for ax in (ax3, ax6):
             #
             #print('*** wkly', weekly_Period*numpy.array(ax.get_xticks()))
@@ -1206,7 +1212,7 @@ class SACCT_data_handler(object):
             #ax.set_xticks(numpy.arange(0,8)*weekly_Period)
             
             ax.set_xticks(cpu_weekly['x']*weekly_Period)
-            ax.set_xticklabels(['sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][0:len(cpu_weekly['x'])])
+            ax.set_xticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][0:len(cpu_weekly['x'])])
             
             #ax.set_xticklabels(['', 'sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
             #ax.grid()
@@ -1992,10 +1998,10 @@ class SACCT_groups_analyzer_report_handler(object):
         #
         # active jobs/cpus and weekly cpu-hours:
         fg = plt.figure(figsize=fig_size)
-        ax1 = plt.subplot('211')
+        ax1 = plt.subplot(2,1,1)
         ax1.grid()
         ax1a = ax1.twinx()
-        ax2 = plt.subplot('212', sharex=ax1)
+        ax2 = plt.subplot(2,1,2, sharex=ax1)
         ax2.grid()
         #
         ax1.plot(act_jobs['time'], act_jobs['N_jobs'], ls='-', lw=2., marker='', label='Jobs', alpha=.5 )
