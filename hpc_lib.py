@@ -1141,7 +1141,9 @@ class SACCT_data_handler(object):
         jobs_hourly = time_bin_aggregates(XY=numpy.array([cpu_usage['time'],
                                                           cpu_usage['N_jobs']]).T, qs=qs)
         #
-        # TODO: poorly handling the DoW here. Note, however, that
+        # TODO: poorly handling the DoW here. For some reason (that made sense at the time -- maybe to do with needing an integer),
+        #  we do a little trick here where we divide/multiply the input sequence and then always use %1 (x%7 == ((x/7)%1)*7 )... or something.
+        #  so
         cpu_weekly = time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
                                                          cpu_usage['N_cpu']]).T, bin_mod=7., qs=qs)
         jobs_weekly = time_bin_aggregates(XY=numpy.array([cpu_usage['time']/7.,
@@ -2224,8 +2226,9 @@ def time_bin_aggregates(XY, bin_mod=24, qs=numpy.array([.25, .5, .75])):
     # NOTE: this is not quite general purpose. it takes the input%1, then converts the fractional remainder
     #. (modulus) to an integer(ish) by multiplying. Aka, t%1 gives the remaining fraction of a day (by standard
     #. python date conventions); (t%1)*24 gives that in hours. But to convert this to DoW, we first have 
-    #. to convert the numerical date to weeks, so we'd want (t-t_0)%7, or we could use this function, but
+    #. to convert the numerical date to weeks, so we'd want (t-t_0)%7; to use this code we
     #. pass t=t_days/7., bin_mod=7, and really we'd want to do a phase shif to get DoW correctly.
+    #  note that num_to_date(0) gives a Thursday, so we also need to shift DoW -=3 to get MTWTFSS correctly.
     #
     XY=numpy.array(XY)
     if XY.shape[0]==2:
@@ -2568,7 +2571,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #
     return jobs_summary
 #
-def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=10000):
+def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=10000, d_t=None):
     '''
     # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
     #  intermediat/transient arrays.
@@ -2577,6 +2580,16 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     #. but it should be manageable).
     # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
     #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
+    #
+    # Some unfortunate naming conventions here will require clarification.
+    # @n_points: as it sounds -- length of timeseries output; can be overridden by specifying d_t
+    # @bin_size: aggregation bin size (eg, daily, weekly binning), but points in timeseries can overlap.
+    # @t_min, @t_max: min,max times in timeseries. will automagically determine these from input data; specifying will override.
+    # @jobs_summary: input jobs_summary data array
+    # @verbose: verbose. probably boolean, but give an integer a try!
+    # @n_cpu: n cpus for parallel processing. Currently thread based, but likely to switch to using multiprocess, which permits multi-node
+    # @step_size: multiprocessing  chunks.
+    # @d_t: time-step size. will override n_points.
     '''
     #
     # stash a copy of input prams:
@@ -2626,9 +2639,28 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     inputs.update({'t_min':t_min, 't_max':t_max})
     #
     # output container:
+#    # TODO: consider (??) allowing d_t designation, instead of n_points.
+#    #  this will better allow us to do complex masks, like M-F,8-5, etc.
+#    # eg:
+    if not d_t is None:
+        # NOTE: this assumes t=0 bins (eg, d_t = .1, t_min=1.05 will give 1.0, 1.1, 1.2, ..., no 1.05, 1.15, ....
+        #  this is (presently) by design, but it may be desirable to add a phase variable at some point, eg: ( (t_min//d_t)*d_t - dt_0 )
+        ts = numpy.arange( (t_min//d_t)*d_t, (d_t + (t_max//d_t)*d_t), d_t )
+        n_points = len(ts)
+        #
+    else:
+        ts = numpy.linspace(t_min, t_max, n_points)
+    #
     CPU_H = numpy.zeros( (n_points, ), dtype=cpuh_dtype)
-    CPU_H['time'] = numpy.linspace(t_min, t_max, n_points)
+    # NOTE: the ts[:] syntax is probably not necessary, but sometimes we have to be extra careful about by_val/by_reff assignment.
+    #  we need to copy the values into the array; the exact behavior and syntax might vary between versions of Python and numpy.
+    CPU_H['time'] = ts[:]
     CPU_H['t_start'] = CPU_H['time']-bin_size
+    del ts
+    #
+    #CPU_H = numpy.zeros( (n_points, ), dtype=cpuh_dtype)
+    #CPU_H['time'] = numpy.linspace(t_min, t_max, n_points)
+    #CPU_H['t_start'] = CPU_H['time']-bin_size
     #
     # recursive MPP handler:
     #  this one is a little bit complicated by the use of linspace(a,b,n), sice linspae is inclusive for both a,b
@@ -2671,6 +2703,8 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     for k,t in enumerate(CPU_H['time']):
         # TODO: wrap this into a (@jit compiled) function to parallelize? or add a recursive block
         #  to parralize the whole function, using an index to break it up.
+        # NOTE / TODO: we *could* add additional masks or indices here to, for example, filter out weekends and after-hours (focus on M-F,8-5)
+        #   jobs... but it's still hard
         ix_k = numpy.where(numpy.logical_and(t_start<=t, t_end>(t-bin_size) ))[0]
         #print('*** shape(ix_k): {}//{}'.format(ix_k.shape, numpy.sum(ix_k)) )
         #
@@ -2713,6 +2747,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     #  probably worth circling back to see if map_async() can be made to work, since it probably has algorithms to estimate optimal chunk_size.
     '''
     #
+    # TODO: modify this to allow a d_t designation, instead of n_points, so we can specify -- for example, an hourly sequence.
     # DEBUG: for now, just set n_cpu=1. we should be able to run this and fix the mpp later...
     #n_cpu=1
     #
@@ -2759,6 +2794,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     #
     if not (bin_size is None or t_min is None or t_max is None):
         n_points = int(numpy.ceil(t_max-t_min)/bin_size)
+    print(f'*** DEBUG: {n_points}, {bin_size}')
     output = numpy.zeros( n_points, dtype=[('time', '>f8'),
                 ('N_jobs', '>f8'),
                 ('N_cpu', '>f8')])
