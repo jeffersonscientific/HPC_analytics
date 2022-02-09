@@ -1156,14 +1156,18 @@ class SACCT_data_handler(object):
         # correct for UTC/PST? Still not positive this is correct:
         # Also... I think this index is sort of a dumb way to shift the time. It would be better to just sort the array...
         #  maybe not if you want to keep both sequences though.
-        ix_pst = numpy.argsort( (jobs_hourly['x']-7)%24)
+        # That said, looks like SLURM uses local time. For now, just get rid of the offset.
+        #ix_pst = numpy.argsort( (jobs_hourly['x']-7)%24)
+        # TODO: this *is* a sort of dumb (certainly confusing...) way to re-sort the Y-axis to relabel the x-axis. since SLURM
+        #  appears to use PST, we should just get rid of ix_pst.
+        ix_pst = numpy.argsort( (jobs_hourly['x']-0)%24)
         #
         X_tmp_hr = numpy.linspace(jobs_hourly['x'][0], jobs_hourly['x'][-1]+1,200)*daily_Period
         X_tmp_wk = numpy.linspace(jobs_weekly['x'][0], jobs_weekly['x'][-1]+1,200)*weekly_Period
         #
         hh1 = ax1.hist(sorted(cpu_usage['N_jobs'])[0:int(1.0*len(cpu_usage))], bins=25, cumulative=False)
         #ax2.plot(jobs_hourly['x'], jobs_hourly['mean'], ls='-', marker='o', label='PST')
-        ln, = ax2.plot(jobs_hourly['x']*daily_Period, jobs_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
+        ln, = ax2.plot(jobs_hourly['x']*daily_Period, jobs_hourly['mean'][ix_pst], ls='-', marker='o', label='Local Time')
         clr = ln.get_color()
         #
         #ax2.plot(jobs_hourly['x']*daily_Period, numpy.ones(len(jobs_hourly['x']))*numpy.mean(jobs_hourly['mean'][ix_pst]), ls='--', marker='', zorder=1, alpha=.7, label='mean', color=clr)
@@ -1178,7 +1182,7 @@ class SACCT_data_handler(object):
         #
         hh4 = ax4.hist(cpu_usage['N_cpu'], bins=25)
         #ax5.plot(cpu_hourly['x'], cpu_hourly['mean'], ls='-', marker='o', label='PST')
-        ln, = ax5.plot( cpu_hourly['x']*daily_Period, cpu_hourly['mean'][ix_pst], ls='-', marker='o', label='UTC')
+        ln, = ax5.plot( cpu_hourly['x']*daily_Period, cpu_hourly['mean'][ix_pst], ls='-', marker='o', label='Local Time')
         clr=ln.get_color()
         ax5.plot(X_tmp_hr, numpy.ones(len(X_tmp_hr))*numpy.mean(cpu_hourly['mean'][ix_pst]), ls='--', marker='',
                 color=clr, label='mean')
@@ -1796,10 +1800,10 @@ class SACCT_groups_analyzer_report(object):
             #
             # active jobs/cpus and weekly cpu-hours:
             fg = plt.figure(figsize=fig_size)
-            ax1 = plt.subplot('211')
+            ax1 = plt.subplot(2,1,1)
             ax1.grid()
             ax1a = ax1.twinx()
-            ax2 = plt.subplot('212', sharex=ax1)
+            ax2 = plt.subplot(2,1,2, sharex=ax1)
             ax2.grid()
             #
             ax1.plot(act_jobs['time'], act_jobs['N_jobs'], ls='-', lw=2., marker='', label='Jobs', alpha=.5 )
@@ -2128,6 +2132,10 @@ def get_group_users(user_id):
 #
 #
 def get_resercher_groups_dict():
+    '''
+    # get research groups and members, for Mazama. This will (probably) not work correctly on Sherloc, and in any case, there are better
+    #  ways to do this on Sherlock.
+    '''
     # TODO: constraints for this? I think this was developed for Mazama. For Sherlock, we might need some secodary groups, or
     #  some other constraint.
     sp_command = 'getent group'
@@ -2271,9 +2279,6 @@ def time_bin_aggregates(XY, bin_mod=24, qs=numpy.array([.25, .5, .75])):
     return numpy.array([tuple(rw) for rw in stats_output], dtype=[('x', '>f8'), ('mean', '>f8'),
                                                         ('stdev', '>f8')] + 
                                          [('q_{}'.format(q), '>f8') for q in qs])
-    #return X_out
-
-#
 #
 # helper functions:
 @numba.jit
@@ -2869,3 +2874,8 @@ def process_ajc_rows(t, t_start, t_end, NCPUs):
     ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
     #
     return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[js]) for js in ix_t])])
+#
+def running_mean(X,n=10):
+    return (numpy.cumsum(numpy.insert(X,0,0))[n:] - numpy.cumsum(numpy.insert(X,0,0))[:-n])/n
+
+
