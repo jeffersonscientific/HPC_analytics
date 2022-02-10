@@ -1963,6 +1963,7 @@ class SACCT_groups_analyzer_report_handler(object):
         per_fig_polar = self.periodic_usage_figure(ix=ix, fout_path_name=periodic_figpath_polar, qs=qs, fig_size=fig_size,
                 group_name=group_name, projection='polar' )
         #
+        # add figures to report:
         self.HPC_tex_obj.add_fig_slide(fig_title='{}: CPU/Jobs Requests'.format(group_name_tex),
             width=fig_width_tex, fig_path=os.path.join(out_path_figs_tex, activity_figname) )
         #
@@ -2058,7 +2059,6 @@ class SACCT_groups_analyzer_report_handler(object):
                 lbls = [simple_date_string(mpd.num2date( float(s) ) ) for s in ax.get_xticks()]
             #
             ax.set_xticklabels(lbls)
-        #
         #
         # Save figure:
         plt.savefig(fout_path_name)
@@ -2735,7 +2735,7 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
 #def active_jobs_cpu(n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
 def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000):
     '''
-    # Since this is now procedural, let's phase out ix. the class-resident version can keep it if so desired.
+    # Since this is now procedural, let's phase out ix?. the class-resident version can keep it if so desired.
     # NOTE on parallelization: There is quite a bit of pre-processing front-matter, so it makes sense to separate the SPP and MPP, as opposed
     #  to doing a recursive callback. Basically, we put in a fair bit of work to construct our working data; it would be expensive to do it again,
     #  messy to integrate it into the call signature, etc. In other words, if you're adding a lot of inputs and input handling to accomodate MPP,
