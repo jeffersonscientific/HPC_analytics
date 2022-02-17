@@ -891,12 +891,15 @@ class SACCT_data_handler(object):
         #output[['N_jobs', 'N_cpu']][j] = len(ix_t), numpy.sum(jobs_summary['NCPUS'][ix_t])
         return len(ix_t), numpy.sum(self.ajc_js['NCPUS'][ix_t])
         #
-    def get_wait_stats(self):
+    def get_wait_stats(self, qs=None):
         # TODO: revise this to use a structured array, not a recarray.
-        wait_stats = numpy.core.records.fromarrays(numpy.zeros((len(self.jobs_summary), 6)).T,
-                                                   dtype=[('ncpus', '>i8'), ('mean', '>f8'), 
-                                                                        ('median', '>f8'),  ('stdev', '>f8'),
-                                                                        ('min', '>f8'),  ('max', '>f8')])
+        dtype=[('ncpus', '>i8'), ('mean', '>f8'), ('median', '>f8'),  ('stdev', '>f8'), ('min', '>f8'),  ('max', '>f8')]
+        if not qs is None:
+            for k,q in enumerate(qs):
+                dtype += [(f'q{k+1}', '>f8')]
+        wait_stats = numpy.core.records.fromarrays(numpy.zeros((len(self.jobs_summary), len(dtype))).T,
+                                                   dtype=dtype)
+        wait_stats.qs=numpy.array(qs)
         #
         delta_ts = self.jobs_summary['Start'] - self.jobs_summary['Submit']
         #
@@ -915,6 +918,10 @@ class SACCT_data_handler(object):
                 #
                 wait_stats[j][l]=f(x_prime)
             #
+            # I NEVER remember the right syntax to set subsets of recarreays or structured arrays...
+            #quantiles = numpy.quantiles(x_prime, qs)
+            for k, (q_s, q_v) in enumerate(zip(qs, numpy.quantile(x_prime, qs))):
+                wait_stats[[f'q{k+1}']][j] = q_v
         #
         return wait_stats
     #
@@ -2095,6 +2102,62 @@ class SACCT_groups_analyzer_report_handler(object):
         plt.suptitle('Periodic Usage: {}'.format(group_name), size=16)
         #
         plt.savefig(fout_path_name)
+#
+def day_of_week_distribution(time=None, Y=None, qs=[.25, .5, .75, .9]):
+    # TODO: add a DoW figure, with ax input.
+    #
+    dtype_qs = [('DoW', '>i8')] + [(f'q{k+1}', '>f8') for k,x in enumerate(qs)]
+    DoWs = numpy.zeros((7,), dtype=dtype_qs)
+    DoWs['DoW'] = numpy.arange(7)
+    #
+    # I think you can do this for a recarray, but not for a structured array? I know this just worked somewhere...
+    #DoWs.qs=qs
+    #
+    if isinstance(time[0], dtm.datetime) or isinstance(time[0], numpy.datetime64):
+        time_working = mpd.date2num(time)
+    else:
+        # assume float/number. if it's not, it will probably break...
+        time_working =  time[:]
+    #
+    # this is not the most efficient or fastest way to do this. The fastest is to just do t_flopat%7-4
+    #days = [x.weekday() for x in time_working]
+    days = numpy.mod(time_working+3, 7).astype(int)
+    #
+    for k in DoWs['DoW']:
+        q_vals = numpy.nanquantile(Y[days==k], qs)
+        for j,q in enumerate(q_vals):
+            DoWs[f'q{j+1}'][k]=q
+            #
+        #
+    #
+    return DoWs
+    
+def hour_of_day_distribution(time=None, Y=None, qs=[.25, .5, .75, .9]):
+    dtype_qs = [('hour', '>i8')] + [(f'q{k+1}', '>f8') for k,x in enumerate(qs)]
+    output = numpy.zeros((24,), dtype=dtype_qs)
+    output['hour'] = numpy.arange(len(output))
+    #
+    # I think you can do this for a recarray, but not for a structured array? I know this just worked somewhere...
+    #DoWs.qs=qs
+    #
+    if isinstance(time[0], dtm.datetime) or isinstance(time[0], numpy.datetime64):
+        time_working = mpd.date2num(time)
+    else:
+        # assume float/number. if it's not, it will probably break...
+        time_working =  time[:]
+    #
+    # this is not the most efficient or fastest way to do this. The fastest is to just do t_flopat%7-4
+    #days = [x.weekday() for x in time_working]
+    hours = (24.*numpy.mod(time_working, 1.)).astype(int)
+    #
+    for k in output['hour']:
+        q_vals = numpy.nanquantile(Y[hours==k], qs)
+        for j,q in enumerate(q_vals):
+            output[f'q{j+1}'][k]=q
+            #
+        #
+    #
+    return output
 #
 def get_group_users(user_id):
     # # and get a list of users to construct an index:

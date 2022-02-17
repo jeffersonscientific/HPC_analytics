@@ -59,6 +59,15 @@ class SACCT_report_handler(object):
         '''
         # cpu-activity with hourly resolution. This will give us HoD, DoW distributions, cpu-activity layer cake, etc.
         '''
+        # handle input path:
+        # default:
+        fout_path_name = fout_path_name or os.path.join(self.out_path, 'cpu_hourly_activity.png')
+        # allow env-like substitution $outpath
+        if fout_path_name.startswith('$outpath'.replace('{', '').replace('}', '')):
+            fout_path_name = fout_path_name.replace('{', '').replace('}', '')
+            fout_path_name = fout_path_name.replace('$outpath', self.out_path)
+        #
+        layer_cake_ave_len=7
         SACCT_obj = SACCT_obj or self.SACCT_obj
         qs = qs or self.qs
         qs = qs or numpy.array([.25, .5, .75, .9])
@@ -86,7 +95,8 @@ class SACCT_report_handler(object):
         ix_a   = numpy.logical_and( numpy.logical_or(hourlies_cpu_job['time']%1.<(hr_am/24.) , hourlies_cpu_job['time']%1>(hr_pm/24.)), numpy.invert(ix_w))
         ix_d   = numpy.logical_and(numpy.invert(ix_w), numpy.invert(ix_a))
         #
-        ave_bins = 7*24
+        #ave_bins = 7*24
+        ave_bins = 24*layer_cake_ave_len
         #
         hourlies_cake_total = hpc_lib.running_mean(hourlies_cpu_job['N_cpu'], ave_bins)
         #
@@ -173,7 +183,7 @@ class SACCT_report_handler(object):
         #
         fg.suptitle('CPU Usage Report', size=16)
         ax1.set_title('Active CPUs')
-        ax2.set_title('Active CPUs layer cake')
+        ax2.set_title(f'Active CPUs layer cake ({layer_cake_ave_len} day average)')
         ax3.set_title('CPUs Active: Hourly, weekdays')
         ax4.set_title('CPUs Active: DoW, 9-5')
         #
@@ -220,6 +230,14 @@ class SACCT_report_handler(object):
         clr = ln.get_color()
         ax2.fill_between(T[ave_bins-1:], X0, X, color=clr, alpha=.2 )
         ax2.legend(loc=0)
+        # NOTE: see hpc_lib.make_report(). This sometimes fails with negative or 0 valued dates (??) If it's a problem, it can be
+        #   handled using a max() function.
+        # this may need to go somewhere. not sure this is where...
+        fg.canvas.draw()
+        print('** ** DEBUG: ', [s.get_text() for s in ax2.get_xticklabels()])
+        lbls = [hpc_lib.simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax2.get_xticklabels()]
+        ax2.set_xticklabels(lbls)
+        #
         #
         ln, = ax3.plot(periodic_hourly_weekdays_cpus['time'], periodic_hourly_weekdays_cpus['q2'], lw=3)
         clr = ln.get_color()
