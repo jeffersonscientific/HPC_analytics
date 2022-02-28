@@ -50,22 +50,30 @@ class SACCT_report_handler(object):
         #         Full_title=self.Full_title,
         #         foutname=os.path.join(out_path, tex_filename))
         #
+        figs_path = os.path.join(out_path, 'figs')
+        tex_path  = os.path.join(out_path, 'tex')
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+        #
         self.HPC_tex_obj = (TEX_obj or hpc_lib.Tex_Slides(Short_title=self.Short_title,
                  Full_title=self.Full_title,
-                 foutname=os.path.join(out_path, tex_filename)) )
+                 foutname=os.path.join(tex_path, tex_filename)) )
     #
-    def cpu_hourly_activity_report(self, ix=None, fout_path_name=None, qs=None, hr_am=8., hr_pm=18., fig_size=None,
+    def cpu_hourly_activity_report(self, fout_path_name=None, qs=None, hr_am=8., hr_pm=18., fig_size=(14,15),
         n_points_wkly_hrs=None, group_name='group', SACCT_obj=None, verbose=0):
         '''
         # cpu-activity with hourly resolution. This will give us HoD, DoW distributions, cpu-activity layer cake, etc.
         '''
+        fig_size = fig_size or self.fig_size
+        fig_size = fig_size or (14,15)
         # handle input path:
         # default:
-        fout_path_name = fout_path_name or os.path.join(self.out_path, 'cpu_hourly_activity.png')
+        #fout_path_name = fout_path_name or os.path.join(self.out_path, 'cpu_hourly_activity.png')
+        fout_path_name = fout_path_name or os.path.join(self.figs_path, 'cpu_hourly_activity.png')
         # allow env-like substitution $outpath
-        if fout_path_name.startswith('$outpath'.replace('{', '').replace('}', '')):
-            fout_path_name = fout_path_name.replace('{', '').replace('}', '')
-            fout_path_name = fout_path_name.replace('$outpath', self.out_path)
+        fout_path_name = fix_output_path(fout_path_name)
+#        if fout_path_name.startswith('$outpath'.replace('{', '').replace('}', '')):
+#            fout_path_name = fout_path_name.replace('{', '').replace('}', '')
+#            fout_path_name = fout_path_name.replace('$outpath', self.out_path)
         #
         layer_cake_ave_len=7
         SACCT_obj = SACCT_obj or self.SACCT_obj
@@ -164,7 +172,7 @@ class SACCT_report_handler(object):
         ####################################
         #
         # set up figure and axes, then plot
-        fg = plt.figure(figsize=(14,15))
+        fg = plt.figure(figsize=fig_size)
         n_cols = 2
         n_rws  = 4
         ax1 = plt.subplot(n_rws,1,1)
@@ -289,8 +297,123 @@ class SACCT_report_handler(object):
         #
         # Save figure:
         plt.savefig(fout_path_name)
+        #
+        return fout_path_name
     #
-    def wait_stats_report(self):
-        pass
+    def wait_stats_report(self, fout_path_name=None, qs=None, fig_size=(14,12), group_name='group', SACCT_obj=None, verbose=0):
+        '''
+        # cpu-activity with hourly resolution. This will give us HoD, DoW distributions, cpu-activity layer cake, etc.
+        '''
+        fig_size = fig_size or self.fig_size
+        fig_size = fig_size or (14,12)
+        #
+        #fout_path_name = fout_path_name or os.path.join(self.out_path, 'wait_times_stats.png')
+        fout_path_name = fout_path_name or os.path.join(self.figs_path, 'wait_times_stats.png')
+        # allow env-like substitution $outpath
+        fout_path_name = fix_output_path(fout_path_name)
+#        if fout_path_name.startswith('$outpath'.replace('{', '').replace('}', '')):
+#            fout_path_name = fout_path_name.replace('{', '').replace('}', '')
+#            fout_path_name = fout_path_name.replace('$outpath', self.out_path)
+        #
+        SACCT_obj = SACCT_obj or self.SACCT_obj
+        #
+        # NOTE: during developmebnt, we used qs_ps to refer the the q-percentiles, not the quantile values themselves.
+        #  we'll maintain external (to this function) consistency by stickign with the qs notation, but use qs_ps
+        #  internally, mostly so we can cut-n-paste from dev. It might be desirable to eventually get rid of the qs_ps notation entirely
+        qs_ps = qs or self.qs
+        qs_ps = qs_ps or numpy.array([.25, .5, .75, .9])
+        #
+        # end handle inputs
+        #
+        #############
+        #dtype_qs = [('time', '>i8')] + [(f'q{k+1}', '>f8') for k,x in enumerate(qs)]
+        wait_times = 60.*24.*(SACCT_obj.jobs_summary['Start'] - SACCT_obj.jobs_summary['Submit'])
+        wait_time_units='minutes'
+        #
+        wait_times_per_dow = hpc_lib.day_of_week_distribution(time=SACCT_obj.jobs_summary['Submit'], Y=wait_times)
+        wait_times_per_hod = hpc_lib.hour_of_day_distribution(time=SACCT_obj.jobs_summary['Submit'], Y=wait_times)
+        #
+        qs_waittimes = numpy.nanquantile(wait_times,qs_ps)
+        print('*** Wait-time quantiles: {}'.format(qs_waittimes))
+        ix_q4 = numpy.logical_and(numpy.isnan(wait_times)==False, wait_times<qs_waittimes[-1])
+        #
+        fg = plt.figure(figsize=fig_size)
+        ax1a = plt.subplot(3,2,1, projection='polar')
+        ax1a.set_theta_direction(-1)
+        ax1a.set_theta_offset(math.pi/2.0)
+        ax1a.set_title('Wait-Time DoW quantiles (hours)')
+        #
+        ax1b = plt.subplot(3,2,2, projection='polar')
+        ax1b.set_theta_direction(-1)
+        ax1b.set_theta_offset(math.pi/2.0)
+        ax1b.set_title('Wait-Time ToD quantiles (hours)')
+        #
+        ax2a = plt.subplot(3,2,3)
+        ax2a.set_title('Wait-Time DoW (clock plot)')
+        ax2b = plt.subplot(3,2,4)
+        ax2b.set_title('Wait-Time ToD (clock plit)')
+        #
+        ax3 = plt.subplot(3,2,5)
+        ax4 = plt.subplot(3,2,6)
+        #
+        X_dow = wait_times_per_dow['DoW']*math.pi*2./7.
+        ln, = ax1a.plot(X_dow, wait_times_per_dow['q2'], ls='-', marker='o')
+        clr = ln.get_color()
+        ax1a.fill_between(X_dow, wait_times_per_dow['q2'], wait_times_per_dow['q3'], color=clr, alpha=.2)
+        ax1a.set_xticks(X_dow)
+        ax1a.set_xticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+        #
+        X_hod = wait_times_per_hod['hour']*math.pi*2./float(len(wait_times_per_hod))
+        ln, = ax1b.plot(X_hod, wait_times_per_hod['q2'], ls='-', marker='o')
+        clr = ln.get_color()
+        ax1b.fill_between(X_hod, wait_times_per_hod['q2'], wait_times_per_hod['q3'], color=clr, alpha=.2)
+        ax1b.set_xticks(X_hod )
+        ax1b.set_xticklabels(numpy.arange(0,24,1))
+        #
+        X_dow = wait_times_per_dow['DoW']
+        ln, = ax2a.plot(X_dow, wait_times_per_dow['q2'], ls='-', marker='o')
+        clr = ln.get_color()
+        ax2a.fill_between(X_dow, wait_times_per_dow['q2'], wait_times_per_dow['q3'], color=clr, alpha=.2)
+        ax2a.set_xticks(numpy.arange(0, 7) )
+        ax2a.set_xticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
+        ax2a.set_ylabel(wait_time_units.capitalize())
+        #
+        X_hod = wait_times_per_hod['hour']
+        ln, = ax2b.plot(X_hod, wait_times_per_hod['q2'], ls='-', marker='o')
+        clr = ln.get_color()
+        ax2b.fill_between(X_hod, wait_times_per_hod['q2'], wait_times_per_hod['q3'], color=clr, alpha=.2)
+        #
+        h1 = ax3.hist(wait_times[ix_q4], bins=1000, density=True)
+        #ax3.set_xlim(0., 1.)
+        ax3.set_title(f'Wait time PDF of {qs_ps[-1]:.2f} quantile')
+        ax3.set_xlabel(wait_time_units.capitalize())
+        ax3.set_ylabel('Percent')
+        #
+        h2 = ax4.hist(wait_times[ix_q4], bins=100, cumulative=True, density=True, histtype='step')
+        h2 = ax4.hist(wait_times[ix_q4], bins=100, cumulative=True, density=True, histtype='stepfilled', alpha=.2)
+        #ax4.set_xlim(0, 1.)
+        ax4.set_title(f'Wait time CDF of {qs_ps[-1]:.2f} quantile')
+        ax4.set_xlabel(wait_time_units.capitalize())
+        ax4.set_ylabel('Percent')
+        #
+        for ax in (ax2a, ax2b, ax3, ax4):
+            ax.grid()
+        # Save figure:
+        plt.savefig(fout_path_name)
+        #
+        # TODO: consider returning a standard class or just a dict. with meta-data
+        return fout_path_name
     #
+    def fix_output_path(self, out_path):
+        '''
+        # standard script to process output_path, to permit wildcards or other tricks and easter-eggs
+        '''
+        if out_path.startswith('$outpath'.replace('{', '').replace('}', '')):
+            out_path = out_path.replace('{', '').replace('}', '')
+            out_path = out_path.replace('$outpath', self.out_path)
+        #
+        return out_path
+
+
+        
     

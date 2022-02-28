@@ -165,7 +165,7 @@ class SACCT_data_handler(object):
     #
     #
     def __init__(self, data_file_name=None, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
-                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None, **kwargs):
+                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None, qs_default=[.25,.5,.75,.9], **kwargs):
         '''
         # handler object for sacct data.
         #
@@ -901,11 +901,14 @@ class SACCT_data_handler(object):
                                                    dtype=dtype)
         wait_stats.qs=numpy.array(qs)
         #
+        # NOTE: jobs that have not started will be blank? None? NaN? Let's see if we can't just pick up NaNs on the flipside.
         delta_ts = self.jobs_summary['Start'] - self.jobs_summary['Submit']
+        ix_started = numpy.invert(numpy.isnan(delta_ts))
+        delta_ts = delta_ts[ix_started]
         #
         for j,k in enumerate(sorted(numpy.unique(self.jobs_summary['NCPUS']) ) ):
             #
-            x_prime = delta_ts[numpy.logical_and(self.jobs_summary['NCPUS']==k, delta_ts>=0.)]
+            x_prime = delta_ts[numpy.logical_and(self.jobs_summary['NCPUS'][ix_started]==k, delta_ts>=0.)]
             #wait_stats[k-1]=[[k, numpy.mean(x_prime), numpy.median(x_prime), numpy.std(x_prime), 
             #                 numpy.min(x_prime), numpy.max(x_prime)]]
             #
@@ -920,8 +923,11 @@ class SACCT_data_handler(object):
             #
             # I NEVER remember the right syntax to set subsets of recarreays or structured arrays...
             #quantiles = numpy.quantiles(x_prime, qs)
-            for k, (q_s, q_v) in enumerate(zip(qs, numpy.quantile(x_prime, qs))):
-                wait_stats[[f'q{k+1}']][j] = q_v
+            #print('*** DEBUG qs: {}, nanlen: {}'.format(qs,numpy.sum(numpy.isnan(x_prime))))
+            #
+            if not qs is None:
+              for k, (q_s, q_v) in enumerate(zip(qs, numpy.quantile(x_prime, qs))):
+                  wait_stats[[f'q{k+1}']][j] = q_v
         #
         return wait_stats
     #
@@ -1585,6 +1591,9 @@ class Tex_Slides(object):
                institution='Stanford University, School of Earth', institution_short='Stanford EARTH',
               email='mryoder@stanford.edu', foutname='output/HPC_analytics/HPC_analytics.tex',
               project_tex=None ):
+        # TODO: modify add_slide() function(s) to accept any correct path to a figure, etc. and resolve the relative path
+        #   between the report .tex and the figure (or other). this can be done, more or less like,
+        #   my_path = os.path.relpath(os.path.abspath(fig), os.path.abspath(tex) )
         #
         # TODO: test saving/reloading presentation_tex. Also, save inputs, so we can completely reload
         #  an object? Something like Tex_Slides_Obj.json: {project_tex:{}, input_prams:{}}
@@ -1600,6 +1609,7 @@ class Tex_Slides(object):
         #  JSON format, so we'll load tex_template like, tex_templates=json.load(fin)['templates']
         #  ... but for now, let's not worry about order.
         #
+        #foutname_full = os.path.abspath(foutname)
         output_path, output_fname = os.path.split(foutname)
         if not os.path.isdir(output_path):
             os.makedirs(output_path)
@@ -1676,11 +1686,22 @@ class Tex_Slides(object):
             foutname=self.foutname
         #
         output_path, fname = os.path.split(foutname)
+        #
+        # TODO: define relative path something like this...
+        rel_path = os.path.relpath(os.abspath(output_path), os.path.abspath(self.foutname) )
+        fname_root, ext  = os.path.splitext(fname)
+        #
+        foutname_tex = os.path.join(output_path, f'{fname_root}.tex')
+        foutname_pdf = os.path.join(output_path, f'{fname_root}.pdf')
+        #
+        print(f'*** DEBUG: output_path: {output_path}, fname: {fname}, **: {fname_root}.pdf')
+        #
         if not os.path.isdir(output_path):
             os.makedirs(output_path)
         #####
         #
-        with open(foutname, 'w') as fout:
+        #with open(foutname, 'w') as fout:
+        with open(foutname_tex, 'w') as fout:
             fout.write(self.header)
             fout.write('\n')
             fout.write(self.title)
@@ -1705,7 +1726,7 @@ class Tex_Slides(object):
         # ... but the paths need to be handled more carefully. consider constructing full paths to figs.
         #
         #pdf_latex_out = subprocess.run(['pdftex', '-output-directory', output_path, foutname], cwd=None)
-        self.pdf_latex_out = subprocess.run(['pdflatex',  fname], cwd=output_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.pdf_latex_out = subprocess.run(['pdflatex',  f'{fname_root}.tex'], cwd=output_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         #print('*** pdf_latex status: ', self.pdf_latex_out)
         
     #
