@@ -1688,7 +1688,7 @@ class Tex_Slides(object):
         output_path, fname = os.path.split(foutname)
         #
         # TODO: define relative path something like this...
-        rel_path = os.path.relpath(os.abspath(output_path), os.path.abspath(self.foutname) )
+        rel_path = os.path.relpath(os.path.abspath(output_path), os.path.abspath(self.foutname) )
         fname_root, ext  = os.path.splitext(fname)
         #
         foutname_tex = os.path.join(output_path, f'{fname_root}.tex')

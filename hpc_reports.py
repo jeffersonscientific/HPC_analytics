@@ -70,7 +70,7 @@ class SACCT_report_handler(object):
         #fout_path_name = fout_path_name or os.path.join(self.out_path, 'cpu_hourly_activity.png')
         fout_path_name = fout_path_name or os.path.join(self.figs_path, 'cpu_hourly_activity.png')
         # allow env-like substitution $outpath
-        fout_path_name = fix_output_path(fout_path_name)
+        fout_path_name = self.fix_output_path(fout_path_name)
 #        if fout_path_name.startswith('$outpath'.replace('{', '').replace('}', '')):
 #            fout_path_name = fout_path_name.replace('{', '').replace('}', '')
 #            fout_path_name = fout_path_name.replace('$outpath', self.out_path)
@@ -310,7 +310,7 @@ class SACCT_report_handler(object):
         #fout_path_name = fout_path_name or os.path.join(self.out_path, 'wait_times_stats.png')
         fout_path_name = fout_path_name or os.path.join(self.figs_path, 'wait_times_stats.png')
         # allow env-like substitution $outpath
-        fout_path_name = fix_output_path(fout_path_name)
+        fout_path_name = self.fix_output_path(fout_path_name)
 #        if fout_path_name.startswith('$outpath'.replace('{', '').replace('}', '')):
 #            fout_path_name = fout_path_name.replace('{', '').replace('}', '')
 #            fout_path_name = fout_path_name.replace('$outpath', self.out_path)
