@@ -2,6 +2,7 @@
 #
 import os
 import sys
+import math
 import numpy
 import scipy
 import scipy.constants
@@ -932,17 +933,19 @@ class SACCT_data_handler(object):
         return wait_stats
     #
     def submit_wait_distribution(self, n_cpu=1):
+        # TODO: add input index?
+        #
         n_cpu = numpu.atleast_1d(n_cpu)
         #
         X = self.jobs_summary['Start'] - self.jobs_summary['Submit']
         #
-        return numpy.array([n_cpu, [X[n] for n in n_cpu]]).T
+        return numpy.array([n_cpu, [X[self.jobs_summary['n_cpu']==n] for n in n_cpu]]).T
     #
     def get_wait_times_per_ncpu(self, n_cpu):
         # get wait-times for n_cpu cpus. to be used independently or as an MPP worker function.
         #
         ix = self.jobs_summary['NCPUS']==n
-        return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit']
+        return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
     #
     def export_primary_data(self, output_path='data/SACCT_full_data.csv', delim='\t'):
         # DEPRICATION: This does not appear to work very well, and we have HDF5 options, so consider this depricated
@@ -1056,7 +1059,6 @@ class SACCT_data_handler(object):
         return numpy.core.records.fromarrays([X0, q_sum, cpu_sum],
                                       dtype=[('time', '>f8'), ('cpu-time', '>f8'), ('cpus', '>f8')] )
         #                                     + [('q{}'.format(k), '>f8') for k,q in enumerate(qs)] )
-        
     #
     def get_submit_wait_timeofday(self, time_units='hours', qs=numpy.array([.5, .75, .95])):
         '''
@@ -1080,7 +1082,7 @@ class SACCT_data_handler(object):
         #
         #X = (self.jobs_summary['Submit']*24.)%24
         X = (self.jobs_summary['Submit']*u_time)%u_time
-        Y = (self.jobs_summary['Start']- self.jobs_summary['Submit'] )*u_time
+        Y = (self.jobs_summary['Start'] - self.jobs_summary['Submit'] )*u_time
         #
         # TODO: we were sorting for a reason, but do we still need to?
         #  NOTE: also, we're sorting on the modulo sequence, so it's highly ambigous. My guess is we can just get rid of this,\
@@ -1128,13 +1130,6 @@ class SACCT_data_handler(object):
         # allowed projections (probably) include:
         #  {None, 'aitoff', 'hammer', 'lambert', 'mollweide', 'polar', 'rectilinear', str}
         #  default, None -> 'rectilinear'
-        if periodic_projection == 'polar':
-            daily_Period = 2.0*scipy.constants.pi/24.
-            weekly_Period = 2.0*scipy.constants.pi/7.
-        else:
-            daily_Period = 1.0
-            weekly_Period = 1.0
-        #
         fg = plt.figure(figsize=figsize)
         #
         ax1 = fg.add_subplot(2,3,1)
@@ -1144,6 +1139,17 @@ class SACCT_data_handler(object):
         ax5 = fg.add_subplot(2,3,5, projection=periodic_projection)
         ax6 = fg.add_subplot(2,3,6, projection=periodic_projection)
         axs = [ax1, ax2, ax3, ax4, ax5, ax6]
+        #
+        if periodic_projection == 'polar':
+            daily_Period = 2.0*scipy.constants.pi/24.
+            weekly_Period = 2.0*scipy.constants.pi/7.
+            #
+            for ax in (ax2, ax3, ax5, ax6):
+              ax.set_theta_direction(-1)
+              ax.set_theta_offset(math.pi/2.0)
+        else:
+            daily_Period = 1.0
+            weekly_Period = 1.0
         #
         #qs = [.45, .5, .55]
         qs_s = ['q_{}'.format(q) for q in qs]
