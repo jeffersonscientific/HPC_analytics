@@ -75,6 +75,17 @@ class SACCT_report_handler(object):
 #            fout_path_name = fout_path_name.replace('{', '').replace('}', '')
 #            fout_path_name = fout_path_name.replace('$outpath', self.out_path)
         #
+        #
+        if os.path.isfile(fout_path_name):
+            os.remove(fout_path_name)
+        if os.path.isdir(fout_path_name):
+            os.rmdir(fout_path_name)
+
+        f_dir_tmp = os.path.split(fout_path_name)[0]
+        if not os.path.isdir(f_dir_tmp):
+            os.makedirs(f_dir_tmp)
+        del f_dir_tmp
+        #
         layer_cake_ave_len=7
         SACCT_obj = SACCT_obj or self.SACCT_obj
         qs = qs or self.qs
