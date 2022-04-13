@@ -1522,6 +1522,10 @@ class SACCT_data_direct(SACCT_data_handler):
         RH = {h:k for k,h in enumerate(headers)}
         #
         data = [self.process_row(rw.replace('\"', ''), headers=headers, RH=RH) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) and len(rw)>1 ]
+        #
+        # exclude any rows with no submit date or jobid. I hate to nest this sort of logic here, but we seem to get these from time to time. I don't see how they can be valid.
+        data = [rw for rw in data if not (rw[RH['JobID']] is None or rw[RH['JobID']]=='' or rw[RH['Submit']] is None or rw[RH['Submit']])=='' ]
+        #
         # pandas.DataFrame(data, columns=active_headers).to_records()
         #
         # this is a bit of a hack, but it should help with MPP.
@@ -2546,6 +2550,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #
     if n_cpu > 1:
         # this should sort in place, which could cause problems downstream, so let's use an index:
+        print('*** DEBUG: data[JobID]: {}, data[Submit]: {}'.format( (None in data['JobID']), (None in data['Submit']) ))
         ix_s = numpy.argsort(data, axis=0, order=['JobID', 'Submit'], kind='stable')
         #
         working_data = data[ix_s]
