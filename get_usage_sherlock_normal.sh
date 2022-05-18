@@ -3,23 +3,20 @@
 #SBATCH -o sacct_sherlock_out_normal.out
 #SBATCH -e sacct_sherlock_out_normal.err
 #SBATCH -p normal
+#SBATCH --mem-per-cpu=4g
 #
 # can we pass "\t" correctly? maybe for now, just use the HPC standard "|" as a delimiter...
 STARTTIME="2019-11-01"
 ENDTIME="2020-11-30"
-FORMAT="User,Group,GID,JobID,Jobname,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended"
+FORMAT="User,Group,GID,Jobname,JobID,JobIDRaw,partition,state,time,ncpus,nnodes,Submit,Eligible,start,end,elapsed,SystemCPU,UserCPU,TotalCPU,NTasks,CPUTimeRaw,Suspended,ReqTRES,AllocTRES"
 #FORMAT="ALL"
 PARTITION="normal"
 #
-#srun sacct -a -p --delimiter="|" --${STARTTIME} --format=User,Group,GID,JobID,Jobname,partition,state,Submit,time,Eligible,start,end,elapsed,MaxRss,MaxVMSize,nnodes,ncpus,SystemCPU,UserCPU,TotalCPU,Suspended
+sacct  --partition=normal  --delimiter="|"  -p --allusers --starttime=2022-03-01T00:00:00 --endtime=2022-04-01T00:00:00 --format=${FORMAT}
 
-srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019-08-16 --endtime=2019-09-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019-09-16 --endtime=2019-10-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019-10-16 --endtime=2019-11-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019-11-16 --endtime=2019-12-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2019-12-16 --endtime=2020-01-15 --format=${FORMAT}
-srun sacct --allusers --partition=$PARTITION -p --delimiter="|" --starttime=2020-01-16 --endtime=2020-02-15 --format=${FORMAT}
-
-#srun sacct --allusers --partition=hns -p --delimiter="|" --starttime=${STARTTIME} --endtime=${ENDTIME} --format=${FORMAT}
-
+sacct  --noheader --partition=normal  --delimiter="|"  -p --allusers --starttime=2022-02-01T00:00:00 --endtime=2022-03-01T00:00:00 --format=${FORMAT}
+sacct  --noheader --partition=normal  --delimiter="|"  -p --allusers --starttime=2022-01-01T00:00:00 --endtime=2022-02-01T00:00:00 --format=${FORMAT}
+sacct  --noheader --partition=normal  --delimiter="|"  -p --allusers --starttime=2021-12-01T00:00:00 --endtime=2022-01-01T00:00:00 --format=${FORMAT}
+sacct  --noheader --partition=normal  --delimiter="|"  -p --allusers --starttime=2021-11-01T00:00:00 --endtime=2021-12-01T00:00:00 --format=${FORMAT}
+sacct  --noheader --partition=normal  --delimiter="|"  -p --allusers --starttime=2021-10-01T00:00:00 --endtime=2021-11-01T00:00:00 --format=${FORMAT}
 
