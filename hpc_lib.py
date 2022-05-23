@@ -620,19 +620,6 @@ class SACCT_data_handler(object):
     #  Ultimately, MPP gains were significant but costly (did not generally parallelize well), and a PAIN to maintain.
     #  on Sherlock, we seem to have sufficient performance to process SPP, so some of this can mabye be simplified?
     # GIT note (commit d16fd6a941c769fbce2da54e067686a1ca0b6c2f):  removing process_ajc_row_2(), as per deprication.
-    def process_ajc_row_2(self, t, t_start, t_end, NCPUs):
-        # DEPRICATION: moving this outside the class definition to better facilitate MPP and development.
-        #
-        #print('*** DEBUG: {} ** {}'.format(len(t_start), len(t_end)))
-        ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
-        #
-        #N=numpy.sum(ix_t, axis=1)
-        #C=numpy.sum(NCPUs.reshape(1,-1), axis=1)
-        #
-        # TODO: there is a proper syntax for the NCPUs calc...
-        #r_val = numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
-        #print('*** return from[{}], sh={} ** {}'.format(os.getpid(), r_val.shape, r_val[0][0:10]))
-        return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[j]) for j in ix_t])])
     #@numba.jit
     #def process_ajc_row(self,j, t_start, t_end, t, jobs_summary):
     def process_ajc_row(self, t):
@@ -1143,7 +1130,7 @@ class SACCT_data_direct(SACCT_data_handler):
         ######################
         # process start_/end_date
         if end_date is None or end_date == '':
-            end_date = dtm.datetime.now().date()
+            end_date = dtm.datetime.now()
         if start_date is None or start_date == '':
             start_date = end_date - dtm.timedelta(days=180)
         #
@@ -1151,8 +1138,12 @@ class SACCT_data_direct(SACCT_data_handler):
             start_date = str2date(start_date)
         if isinstance(end_date, str):
             end_date = str2date(end_date)
+        start_date = start_date.replace(tzinfo=pytz.UTC)
+        end_date   = end_date.replace(tzinfo=pytz.UTC)
         #
-        #print('*** ', start_date, type(start_date), end_date, type(end_date))
+        print('*** ', start_date, type(start_date), end_date, type(end_date))
+        # end process start_/end_date
+        ###############
         #
         start_end_times = [(start_date, min(start_date + dtm.timedelta(days=delta_t_days), end_date))]
         while start_end_times[-1][1] < end_date:
@@ -1335,7 +1326,9 @@ class SACCT_data_direct(SACCT_data_handler):
         #
         data = [self.process_row(rw.replace('\"', ''), headers=headers, RH=RH) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) and len(rw)>1 ]
         #
-        # NOTER: added this (Very inefficient) step because I though it was failing to sort on the sort fields. It was really failing to sort on an empty set, so I think
+        # NOTE: added this (Very inefficient) step because I though it was failing to sort on the sort fields. It was really failing to sort on an empty set, so I think
+        # NOTE: But... it might make sense to sort here and eliminate duplicates. breaking a big query into lots of subquerries
+        # will likely produce lots of dupes.
         #   we can skip this.
         # exclude any rows with no submit date or jobid. I hate to nest this sort of logic here, but we seem to get these from time to time. I don't see how they can be valid.
         #  that said... I think this was supposed to fix something that is not actually happening, so we can probably omit this step.
@@ -2799,6 +2792,8 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
             # ... but I can't seem to find a working syntax for something like [structured_array_cols] = [non-structured_array_cols] for
             #  multiple columns. So we could modify process_ajc_rows() to return a structured array, or we can just do this.
             #
+            if verbose:
+              print('*** DEBUG: shape(output)={}, shape(r_nj)={}, shape(r_ncpu):{}'.format(numpy.shape(output), numpy.shape(r_nj), numpy.shape(r_ncpu)))
             output['N_jobs'] += numpy.array(r_nj)
             output['N_cpu']  += numpy.array(r_ncpu)
         #
@@ -2807,9 +2802,15 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     return output
 #
 def process_ajc_rows(t, t_start, t_end, NCPUs):
+    # active jobs cpus...
     #
     #print('*** DEBUG: {} ** {}'.format(len(t_start), len(t_end)))
-    ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
+    # Because we artifically set t_end = t_now for active jobs, I think using t_end>t, vs t_end >= t
+    # produces an artifact of usage falling off. We don't have to use the exclusive
+    # t1 <= t2 < t or t1 < t <= t2 restriction since we're not counting t; we're just asking if a job is
+    # active during a time bin. note we could also set t_end = now()+dt.
+    #ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
+    ix_t = numpy.logical_and(t_start <= t.reshape(-1,1), t_end >= t.reshape(-1,1))
     #
     return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[js]) for js in ix_t])])
 #
