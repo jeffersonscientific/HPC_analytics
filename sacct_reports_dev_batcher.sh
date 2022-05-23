@@ -7,7 +7,7 @@
 #SBATCH --mem-per-cpu=8g
 #SBATCH --output=sacct_report_batcher_%j.out
 #SBATCH --error=sacct_report_batcher_%j.out
-#SBATCH --time=1:00:00
+#SBATCH --time=06:00:00
 #
 module purge
 module load anaconda-cees-beta/
