@@ -2386,11 +2386,16 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #
         #working_data = data[ix_s]
         working_data = data[:]
-        # FIXME: This is likely the problem we are seeing when we break up a query. Here we sorty by JobID, but then
-        #  we qualify sequential entries by JobID_parent. It *should* make sense to just add JobID_parent to the sort.
-        #  we'll need to look more closely to determine how to best sort; don't recall right now how exactly
-        #  JobID vs JobID_parent break down.
-        working_data.sort(axis=0, order=['JobID', 'Submit'], kind=sort_kind)
+        # FIXME: This is likely the problem we are seeing when we break up a query. A couple things: we are a little inconsistent
+        #  with use of JobID vs JobID_parent, but this is usually a non-problem since JobID_parent is a derived field
+        #  that just truncates the parent jobID from Arrays like, JobID_parent=JobID.split('.')[0], so
+        #  12345.67 -> 12345.
+        #  The bigger problem is that we get duplicates when we split up a large query into smaller sub-queries, so eventually
+        #  the algorithm tries to sort on a NONEtype field. We can fix this by adding an index. We do appear to be adding
+        #  this 'index' column to the sacct data, so let's use that!
+        print('*** DEBUG: working_data.dtype: {}'.format(working_data.dtype))
+        #working_data.sort(axis=0, order=['JobID', 'Submit'], kind=sort_kind)
+                working_data.sort(axis=0, order=['JobID', 'Submit', 'index'], kind=sort_kind)
         #
         #ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
         ks = numpy.array([*numpy.arange(0, len(data), step_size), len(data)+1])
