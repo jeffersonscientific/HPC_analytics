@@ -1076,7 +1076,7 @@ class SACCT_data_direct(SACCT_data_handler):
     format_list_default = ['User', 'Group', 'GID', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES']
-    def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=10,
+    def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=10, default_catalog_length=180,
         format_list=None, n_cpu=None, types_dict=None, verbose=0, chunk_size=1000,
         h5out_file=None, keep_raw_data=False, raw_output_file=None, n_points_usage=1000,
         **kwargs):
@@ -1132,7 +1132,7 @@ class SACCT_data_direct(SACCT_data_handler):
         if end_date is None or end_date == '':
             end_date = dtm.datetime.now()
         if start_date is None or start_date == '':
-            start_date = end_date - dtm.timedelta(days=180)
+            start_date = end_date - dtm.timedelta(days=default_catalog_length)
         #
         if isinstance(start_date, str):
             start_date = str2date(start_date)
@@ -2399,14 +2399,15 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         if verbose:
             print('*** DEBUG: working_data.dtype: {}'.format(working_data.dtype))
             print('*** DEBUG: len(working_data[index]), len(unique(working_data[index])): {}, {}'.format(len(working_data['index']), len(numpy.unique(working_data['index']))))        #working_data.sort(axis=0, order=['JobID', 'Submit'], kind=sort_kind)
-#        ix_temp = numpy.sort(working_data['JobID'])
-#        ix_temp = numpy.argsort(working_data['JobID_parent'])
-#        ix_temp = numpy.sort(working_data['Submit'])
-#        ix_temp = numpy.sort(working_data['index'])
+        #
         # keep getting nonetype! seems like sorting on 'index' should pretty much sort it out, but no...
+        #   this is possibly best called a "bug." It would seem that sort() sorts along the specified axes and then all the
+        #   rest of them anyway (even after the sort is resolved). it is worth noting then that this might also result in a
+        #   performance hit, so even though our solution -- to compute an index, looks stupid, it might actually be best practice.
         # seems sort of stupid, but this might work.
-        ix_temp = numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])
-        working_data.sort(order=['JobID_parent', 'index'], kind=sort_kind)
+        #ix_temp = numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])
+        working_data = working_data[numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])]
+        #working_data.sort(order=['JobID_parent', 'index'], kind=sort_kind)
         #
         #ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
         ks = numpy.array([*numpy.arange(0, len(data), step_size), len(data)+1])
@@ -2469,7 +2470,6 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #
     #ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
     # how do we do a distributed string operation in a numpy.array()?
-    ix_user_jobs = numpy.invert(numpy.logical_or())
     #
     # It looks like this was an expensive way to compute data['JobID_parent'], before we knew about _parent. This should save us some compute time!
     #job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
@@ -2754,7 +2754,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     output = numpy.zeros( n_points, dtype=[('time', '>f8'),
                 ('N_jobs', '>f8'),
                 ('N_cpu', '>f8')])
-    output['time'] = numpy.linspace(t_min, t_max, n_points)
+    output['time'] = numpy.linspace(t_min, t_max - (t_max - t_min)/n_points, n_points)
     #
     # This is a slick, vectorized way to make an index, but It uses way too much memory, and so is probably too slow anyway
     #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
@@ -2781,6 +2781,10 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
         #output['N_cpu']  = r_ncpu
         #
         # can we save some time by consolidating this into a single statement?
+        # NOTE: Check this... using all of t (might?) produces an artifact where active_cpus -> 0 at the end, because that
+        #   time ends up falls outside the start/stop time domain??? I guess though... since the time axis is constructecd
+        #   separately, just excluding the last element is not a very good fix; we should live with the artifact or fix the
+        #   time axis.
         output['N_jobs'], output['N_cpu'] = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])
         return output
         #
