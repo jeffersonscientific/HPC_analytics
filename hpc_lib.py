@@ -2384,8 +2384,11 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         sort_kind='quicksort'
         #ix_s = numpy.argsort(data, axis=0, order=['JobID', 'Submit', 'index'], kind=sort_kind)
         #
+        #
         #working_data = data[ix_s]
         working_data = data[:]
+        working_data['index'] = numpy.arange(len(working_data))
+        #
         # FIXME: This is likely the problem we are seeing when we break up a query. A couple things: we are a little inconsistent
         #  with use of JobID vs JobID_parent, but this is usually a non-problem since JobID_parent is a derived field
         #  that just truncates the parent jobID from Arrays like, JobID_parent=JobID.split('.')[0], so
@@ -2393,9 +2396,17 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #  The bigger problem is that we get duplicates when we split up a large query into smaller sub-queries, so eventually
         #  the algorithm tries to sort on a NONEtype field. We can fix this by adding an index. We do appear to be adding
         #  this 'index' column to the sacct data, so let's use that!
-        print('*** DEBUG: working_data.dtype: {}'.format(working_data.dtype))
-        #working_data.sort(axis=0, order=['JobID', 'Submit'], kind=sort_kind)
-                working_data.sort(axis=0, order=['JobID', 'Submit', 'index'], kind=sort_kind)
+        if verbose:
+            print('*** DEBUG: working_data.dtype: {}'.format(working_data.dtype))
+            print('*** DEBUG: len(working_data[index]), len(unique(working_data[index])): {}, {}'.format(len(working_data['index']), len(numpy.unique(working_data['index']))))        #working_data.sort(axis=0, order=['JobID', 'Submit'], kind=sort_kind)
+#        ix_temp = numpy.sort(working_data['JobID'])
+#        ix_temp = numpy.argsort(working_data['JobID_parent'])
+#        ix_temp = numpy.sort(working_data['Submit'])
+#        ix_temp = numpy.sort(working_data['index'])
+        # keep getting nonetype! seems like sorting on 'index' should pretty much sort it out, but no...
+        # seems sort of stupid, but this might work.
+        ix_temp = numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])
+        working_data.sort(order=['JobID_parent', 'index'], kind=sort_kind)
         #
         #ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
         ks = numpy.array([*numpy.arange(0, len(data), step_size), len(data)+1])
@@ -2451,21 +2462,23 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #
         return jobs_summary
     #
+    # else:
     # Single-process code:
+    # this actually works quite differently. Not sure yet if it's a bad idea. Also, not clear if we want
+    #  to be distinguishing jobs on JobID or JobID_parent.
     #
-    ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+    #ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
     # how do we do a distributed string operation in a numpy.array()?
-    #ix_user_jobs = numpy.invert(numpy.logical_or())
+    ix_user_jobs = numpy.invert(numpy.logical_or())
     #
     # It looks like this was an expensive way to compute data['JobID_parent'], before we knew about _parent. This should save us some compute time!
     #job_ID_index = {ss:[] for ss in numpy.unique([s[0:(s+'.').index('.')]
     #                                            for s in data['JobID'][ix_user_jobs] ])}
     job_ID_index = {ss:[] for ss in numpy.unique( data['JobID_parent'] )}
     #
-    #jobs_summary = numpy.array(numpy.zeros(shape=(len(job_ID_index), )), dtype=data.dtype)
     jobs_summary = numpy.zeros( shape=(len(job_ID_index), ), dtype=data.dtype)
     #
-    #job_ID_index = dict(numpy.array(numpy.unique(self.data['JobID_parent'], return_counts=True)).T)
+    # build an index of unique ids : {jobid_parent:[k1, k2, k3...],}
     for k,s in enumerate(data['JobID_parent']):
         job_ID_index[s] += [k]
     #
@@ -2477,6 +2490,8 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     for k, (j_id, ks) in enumerate(job_ID_index.items()):
         if len(ks)==0:
             print('*** no ks: {}, {}'.format(j_id, ks))
+        #
+        # assign place-holder values to jobs_summary (we can probably skip this step)
         jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
         #
         # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
