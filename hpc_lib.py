@@ -1402,6 +1402,7 @@ class SACCT_data_from_h5(SACCT_data_handler):
         self.h5out_file = h5out_file
         #
 #
+# TODO: move class Tex_Slides() to hpc_reports.py . This might have been done, or it was rewritten there. Either way, TODO: delete it from hpc_lib.
 class Tex_Slides(object):
     def __init__(self, template_json='tex_components/EARTH_Beamer_template.json',
                  Short_title='', Full_title='Title',
@@ -2387,9 +2388,10 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #working_data = data[ix_s]
         working_data = data[:]
         # FIXME: This is likely the problem we are seeing when we break up a query. Here we sorty by JobID, but then
-        #  we qualify sequential entries by JobID_parent. It *should* make sense to just add JobID_parent to the sort.
+        #  we qualify sequential entries by JobID_parent. It *should* make sense to just add JobID_parent to the sort,
+        #  and/or maybe JobIDRaw (which I think is just a unique JobID, including for each array entry).
         #  we'll need to look more closely to determine how to best sort; don't recall right now how exactly
-        #  JobID vs JobID_parent break down.
+        #  JobID vs JobID_parent break down. The main thing is to add a 
         working_data.sort(axis=0, order=['JobID', 'Submit'], kind=sort_kind)
         #
         #ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
