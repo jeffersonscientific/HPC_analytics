@@ -202,7 +202,7 @@ class SACCT_data_handler(object):
         self.calc_summaries()
         #
     #
-    def calc_summaries(self, n_cpu=None, chunk_size=None):
+    def calc_summaries(self, n_cpu=None, chunk_size=None, t_min=None, t_max=None):
         #
         n_cpu = n_cpu or self.n_cpu
         n_points_usage = self.n_points_usage
@@ -221,6 +221,14 @@ class SACCT_data_handler(object):
         if t_max is None and 'end_date' in self.__dict__.keys():
             t_max = self.end_date
             #
+        #
+        # t_min, t_max need to be numeric. most likely, we'll be converting
+        #  from a datetime type, but this should be better handled.
+        # TODO: handle data type better...
+        if not (isinstance(t_min, float) or isinstance(t_min, int)):
+            t_min = mpd.date2num(t_min)
+        if not (isinstance(t_max, float) or isinstance(t_max, int)):
+            t_max = mpd.date2num(t_max)
         #
         self.jobs_summary = self.calc_jobs_summary()
         if not self.keep_raw_data:
