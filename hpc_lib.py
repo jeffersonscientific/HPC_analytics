@@ -266,7 +266,9 @@ class SACCT_data_handler(object):
         if h5out_file is None:
             h5out_file = 'sacct_writehdf5_output.h5'
         #
+        h5_mode = 'a'
         if not append:
+            h5_mode = 'w'
             with h5py.File(h5out_file, 'w') as fout:
                 # over-write this file
                 pass
@@ -279,6 +281,14 @@ class SACCT_data_handler(object):
         array_to_hdf5_dataset(input_array=self.weekly_hours, dataset_name='weekly_hours', output_fname=h5out_file, h5_mode='a')
         array_to_hdf5_dataset(input_array=self.daily_hours, dataset_name='daily_hours', output_fname=h5out_file, h5_mode='a')
         #
+#        # TODO: also write metadata:
+#        # you'd think the best thing to do would be to make a datset for inptus, but then we have to structure
+#          that dataset. I think we can just store variables.
+#        with h5py.File(output_fname, h5_mode) as fout:
+#            if not meta_data in fout.keys():
+#                fout.create_dataset(dataset_name, input_array.shape,
+#                            dtype=new_dtype)
+        
         return None
     #
     def calc_jobs_summary(self, data=None, verbose=None, n_cpu=None, step_size=100000):
