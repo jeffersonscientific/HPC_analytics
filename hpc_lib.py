@@ -164,6 +164,10 @@ class SACCT_data_handler(object):
     #    
     time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
     #
+    # add a dict to capture input(like) paremeters. These can then be easily added to hdf5 (and similar) storage
+    #  containers.
+    attributes={}
+    #
     #
     def __init__(self, data_file_name=None, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
                  n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None, qs_default=[.25,.5,.75,.9], **kwargs):
@@ -189,6 +193,7 @@ class SACCT_data_handler(object):
             types_dict=self.default_types_dict
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        self.attributes.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
         self.load_data()
         #
@@ -201,6 +206,8 @@ class SACCT_data_handler(object):
         self.RH = {h:k for k,h in enumerate(self.headers)}
         self.calc_summaries()
         #
+        self.attributes['h5out_file'] = h5out_file
+        self.attributer['RH'] = self.RH
     #
     def calc_summaries(self, n_cpu=None, chunk_size=None, t_min=None, t_max=None):
         #
@@ -1036,6 +1043,7 @@ class SACCT_data_direct(SACCT_data_handler):
         ##########################
         #
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
+        self.attributes.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
         print('*** DEBUG: Now execute load_sacct_data(); options_str={}'.format(options_str))
         self.data = self.load_sacct_data(options_str=options_str, format_string=format_string)
@@ -2566,7 +2574,7 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     return CPU_H
 #
 #def active_jobs_cpu(n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
-def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000):
+def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.):
     '''
     # Since this is now procedural, let's phase out ix?. the class-resident version can keep it if so desired.
     # NOTE on parallelization: There is quite a bit of pre-processing front-matter, so it makes sense to separate the SPP and MPP, as opposed
@@ -2579,10 +2587,14 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     # @bin_size: size of bins. This will override n_points
     # @t_min: start time (aka, bin phase).
     # @ix: an index, aka user=my_user
+    # NOTE: see @mpp_chunksize below: speed performance was a big problem on Mazama, probably because it was IO limited? Not
+    #   seeing the same problem(s) on Sherlock, so some of these more desperate discussions of performance optimization can probably
+    #   be ignored.
     # @mpp_chunksize: batch size for MPP, in this case probably an apply_async(). Note that this has a significant affect on speed and parallelization
     #  performance, and optimal performance is probably related to maximal use of cache. For example, for moderate size data sets, the SPP speed might be ~20 sec,
     #  and the 2cpu, chunk_size=20000 might be 2 sec, then 1.5, 1.2, for 3,4 cores. toying with the chunk_size parameter suggests that cache size is the thing. It is
     #  probably worth circling back to see if map_async() can be made to work, since it probably has algorithms to estimate optimal chunk_size.
+    # @nan_to={val} set nan values to {val}. If None, skip this step. Default is 0.
     '''
     #
     # TODO: modify this to allow a d_t designation, instead of n_points, so we can specify -- for example, an hourly sequence.
@@ -2669,6 +2681,11 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
         #   separately, just excluding the last element is not a very good fix; we should live with the artifact or fix the
         #   time axis.
         output['N_jobs'], output['N_cpu'] = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])
+        #
+        if not nan_to is None:
+            output['N_jobs'][numpy.isnan(output['N_jobs'])] = 0.
+            output['N_cpu'][numpy.isnan(output['N_cpu'])]   = 0.
+        #
         return output
         #
         #return numpy.core.records.fromarrays([numpy.linspace(t_min, t_max, n_points), *process_ajc_rows(t=numpy.linspace(t_min, t_max, n_points), t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])], dtype=[('time', '>f8'),
