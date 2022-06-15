@@ -577,6 +577,31 @@ class SACCT_data_handler(object):
         ix = self.jobs_summary['NCPUS']==n
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
     #
+    def get_cpu_hours_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
+                              t_min=None, t_max=None, verbose=0):
+        # wrap cpu_hors layer cake into one function. Could further abstract this to layer-cake anything,
+        # but the added complexity in defining the timeseries-function then does not really help (i don't think)
+        #
+        jobs_summary = jobs_summary or self.jobs_summary
+        
+        #
+        if layers is None:
+            layers = [ky.decode() for ky in list(set(jobs_summary[layer_field]))]
+        layers = {ky:{} for ky in layers}
+        if verbose:
+            print('*** ', layers)
+        #
+        for ky in layers.keys():
+            if verbose:
+                print(f'*** ky: {ky}')
+            #
+            ix = jobs_summary[layer_field] == ky.encode()
+            layers[ky]['cpu_hours'] = self.get_cpu_hours(bin_size=bin_size, n_points=n_points, t_min=t_min, t_max=t_max,
+                                                jobs_summary=jobs_summary[ix])
+            layers[ky]['elapsed'] = numpy.sum(jobs_summary['Elapsed'][ix])
+        #
+        return layers
+    #
     def export_primary_data(self, output_path='data/SACCT_full_data.csv', delim='\t'):
         # DEPRICATION: This does not appear to work very well, and we have HDF5 options, so consider this depricated
         #  and maybe remove it going forward.
@@ -2740,5 +2765,14 @@ def process_ajc_rows(t, t_start, t_end, NCPUs):
 #
 def running_mean(X,n=10):
     return (numpy.cumsum(numpy.insert(X,0,0))[n:] - numpy.cumsum(numpy.insert(X,0,0))[:-n])/n
+#
+def flatten(A):
+    # flagrantly stollen from:
+    # https://stackoverflow.com/questions/17864466/flatten-a-list-of-strings-and-lists-of-strings-and-lists-in-python
+    rt = []
+    for i in A:
+        if isinstance(i,list): rt.extend(flatten(i))
+        else: rt.append(i)
+    return rt
 
 
