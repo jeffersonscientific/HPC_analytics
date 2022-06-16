@@ -207,7 +207,7 @@ class SACCT_data_handler(object):
         self.calc_summaries()
         #
         self.attributes['h5out_file'] = h5out_file
-        self.attributer['RH'] = self.RH
+        self.attributes['RH'] = self.RH
     #
     def calc_summaries(self, n_cpu=None, chunk_size=None, t_min=None, t_max=None):
         #
