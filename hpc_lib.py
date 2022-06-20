@@ -164,6 +164,10 @@ class SACCT_data_handler(object):
     #    
     time_units_vals={'days':1., 'hours':24., 'minutes':24.*60., 'seconds':24.*3600.}
     #
+    # add a dict to capture input(like) paremeters. These can then be easily added to hdf5 (and similar) storage
+    #  containers.
+    attributes={}
+    #
     #
     def __init__(self, data_file_name=None, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
                  n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None, qs_default=[.25,.5,.75,.9], **kwargs):
@@ -189,6 +193,7 @@ class SACCT_data_handler(object):
             types_dict=self.default_types_dict
         #
         self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        self.attributes.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
         self.load_data()
         #
@@ -201,30 +206,45 @@ class SACCT_data_handler(object):
         self.RH = {h:k for k,h in enumerate(self.headers)}
         self.calc_summaries()
         #
+        self.attributes['h5out_file'] = h5out_file
+        self.attributes['RH'] = self.RH
     #
-    def calc_summaries(self, n_cpu=None, chunk_size=None):
+    def calc_summaries(self, n_cpu=None, chunk_size=None, t_min=None, t_max=None):
         #
         n_cpu = n_cpu or self.n_cpu
         n_points_usage = self.n_points_usage
         chunk_size = chunk_size or self.chunk_size
         #
+        # TODO: add start_date, end_date to parent class. Also then change all reffs of t_min/_max to start_date,
+        #   end_date to simplify the syntax.
+        # add t_min, t_max (start/end dates). This is a little bit clunky and bass-ackwards, since it is actually
+        #  facilitating compatibility with chile subclasses, but in a way that is harmless. Also, might be a good idea to
+        #  handle t_min, t_max in general. These are the min/max times in the timeseries. By default, they are inferred from
+        #  the data, but because SACCT yields all jobs in any state during the start/end times, you can actually get start/end
+        #  times outside your query window.
+        if t_min is None and 'start_date' in self.__dict__.keys():
+            t_min = self.start_date
+            #
+        if t_max is None and 'end_date' in self.__dict__.keys():
+            t_max = self.end_date
+            #
+        #
+        # t_min, t_max need to be numeric. most likely, we'll be converting
+        #  from a datetime type, but this should be better handled.
+        # TODO: handle data type better...
+        if not (isinstance(t_min, float) or isinstance(t_min, int)):
+            t_min = mpd.date2num(t_min)
+        if not (isinstance(t_max, float) or isinstance(t_max, int)):
+            t_max = mpd.date2num(t_max)
+        #
         self.jobs_summary = self.calc_jobs_summary()
         if not self.keep_raw_data:
             del self.data
         #
-        #self.__dict__.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
+        self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, t_min=t_min, t_max=t_max, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
+        self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, t_min=t_min, t_max=t_max, n_cpu=n_cpu)
+        self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, t_min=t_min, t_max=t_max, n_cpu=n_cpu)
         #
-        # TODO: (re-)parallelize this...?? running continuously into problems with pickled objects being too big, so
-        #   we need to be smarter about how we parallelize. Also, parallelization is just costing a lot of memory (like 15 GB/CPU -- which
-        #   seems too much, so could be a mistake, but probalby not, since I'm pretty sure I ran a smilar job in SPP on <8GB).
-        #   Also, on Sherlock (and presumably newer platforms in general), SPP performance is probably sufficient. I think the Mazama
-        #     performance was highly IO constrained. We have other problems on Sherlock that are possibly complicated by MPP.
-        
-        self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
-        self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, n_cpu=n_cpu)
-        self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, n_cpu=n_cpu)
-        #
-
     #
     def load_data(self, data_file_name=None):
         #
@@ -253,7 +273,9 @@ class SACCT_data_handler(object):
         if h5out_file is None:
             h5out_file = 'sacct_writehdf5_output.h5'
         #
+        h5_mode = 'a'
         if not append:
+            h5_mode = 'w'
             with h5py.File(h5out_file, 'w') as fout:
                 # over-write this file
                 pass
@@ -266,6 +288,14 @@ class SACCT_data_handler(object):
         array_to_hdf5_dataset(input_array=self.weekly_hours, dataset_name='weekly_hours', output_fname=h5out_file, h5_mode='a')
         array_to_hdf5_dataset(input_array=self.daily_hours, dataset_name='daily_hours', output_fname=h5out_file, h5_mode='a')
         #
+#        # TODO: also write metadata:
+#        # you'd think the best thing to do would be to make a datset for inptus, but then we have to structure
+#          that dataset. I think we can just store variables.
+#        with h5py.File(output_fname, h5_mode) as fout:
+#            if not meta_data in fout.keys():
+#                fout.create_dataset(dataset_name, input_array.shape,
+#                            dtype=new_dtype)
+        
         return None
     #
     def calc_jobs_summary(self, data=None, verbose=None, n_cpu=None, step_size=100000):
@@ -430,158 +460,8 @@ class SACCT_data_handler(object):
         #
         return get_cpu_hours(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, jobs_summary=jobs_summary, verbose=verbose, n_cpu=n_cpu, step_size=step_size)
     #
-    #@numba.jit
-    def get_cpu_hours_depricated(self, n_points=10000, bin_size=7., IX=None, t_min=None, t_max=None, jobs_summary=None, verbose=False,
-                     n_cpu=None):
-        '''
-        # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
-        #  intermediat/transient arrays.
-        #
-        # Get total CPU hours in bin-intervals. Note these can be running bins (which will cost us a bit computationally,
-        #. but it should be manageable).
-        # NOTE: By permitting jobs_summary to be passed as a param, we make it easier to do a recursive mpp operation
-        #. (if n_cpu>1: {split jobs_summary into n_cpu pieces, pass back to the calling function with n_cpu=1
-        '''
-        #
-        # stash a copy of input prams:
-        inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
-        n_cpu = (n_cpu or self.n_cpu)
-        #
-        # use IX input to get a subset of the data, if desired. Note that this indroduces a mask (or something)
-        #. and at lest in some cases, array columns should be treated as 2D objects, so to access element k,
-        #. ARY[col][k] --> (ARY[col][0])[k]
-        if jobs_summary is None:
-            # NOTE: (see notes below), pasing a None index appears to have a null effect, but it actually reshapes
-            #  the array, like [n,] to something like [n,1], so a vector to a [ [], [], [],...]
-            jobs_summary = self.jobs_summary
-        #
-        if verbose:
-            print('** DEBUG: len(jobs_summary): {}'.format(len(jobs_summary)))
-        # NOTE: passing a None index appears to have a null effect -- just returns the whole array, but id does not.
-        #  when we pass None as an index, the columns are returned with elevated rank. aka,
-        #  (X[None])[col].shape == (1, n)
-        #  (X[col].shape == (n,)
-        #  (X[ix])[col].shape == (n,)
-        if not IX is None:
-            jobs_summary = jobs_summary[IX]
-        #
-        t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
-        #print('*** shape(t_now): ', numpy.shape(t_now))
-        if verbose:
-            print('** DEBUG: len(jobs_summary[ix]): {}'.format(len(jobs_summary)))
-        #
-        cpuh_dtype = [('time', '>f8'),
-            ('t_start', '>f8'),
-            ('cpu_hours', '>f8'),
-            ('N_jobs', '>f8')]
-        #
-        if len(jobs_summary)==0:
-            return numpy.array([], dtype=cpuh_dtype)
-        #
-        # NOTE: See above discussion RE: [None] index and array column rank.
-        t_start = jobs_summary['Start']
-        t_end = jobs_summary['End'].copy()
-        #
-        if verbose:
-            print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
-        #
-        # handle currently running jobs (do we need to copy() the data?)
-        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
-        #
-        if verbose:
-            print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
-        #
-        if t_min is None:
-            t_min = numpy.nanmin([t_start, t_end])
-        #
-        if t_max is None:
-            t_max = numpy.nanmax([t_start, t_end])
-        #
-        # recursive MPP handler:
-        #  this one is a little bit complicated by the use of linspace(a,b,n), sice linspae is inclusive for both a,b
-        #  so we have to do a trick to avoid douple-calculationg (copying) the intersections (b_k-1 = a_k)
-        if n_cpu>1:
-            #
-            # TODO: do this with a linspace().astype(int)
-            time_axis = numpy.linspace(t_min, t_max, n_points)
-            dk = min(int(numpy.ceil(n_points/n_cpu)),1000)
-            k_ps = numpy.arange(0, n_points, dk)
-            if not k_ps[-1]==n_points:
-                k_ps = numpy.append(k_ps, [n_points])
-            if verbose:
-                print('*** k_ps: ', k_ps)
-            #
-            
-            #
-            #t_intervals = numpy.linspace(t_min, t_max, n_cpu+1)
-            #dt = (t_max - t_min)/n_points
-            #
-            with mpp.Pool(n_cpu) as P:
-                R = []
-                #for k_p, (t1, t2) in enumerate(zip(t_intervals[0:-1], t_intervals[1:])):
-                for k1, k2 in zip(k_ps[0:-1], k_ps[1:]):
-                    t1 = time_axis[k1]
-                    t2 = time_axis[k2-1]
-                    
-                    my_inputs = inputs.copy()
-                    # TODO: need to clean up integer mismatches on n_points. I think the best thing to do is to just
-                    # instantiate a full X sequence and parse it for x_min, x_max, len(x). For now, this should run.                    
-                    #my_inputs.update({'t_min':t1, 't_max':t2 - dt*(k_p<float(n_cpu-1)), 'n_cpu':1, 
-                    my_inputs.update({'t_min':t1, 't_max':t2, 'n_cpu':1,'n_points':int(k2-k1)})
-                    if verbose:
-                        print('*** my_inputs: ', my_inputs)
-                    #
-                    R += [P.apply_async(self.get_cpu_hours, kwds=my_inputs.copy())]
-                    #
-                res = [r.get() for r in R]
-                # join()? not clear on this with a context manager..
-                #P.join()
-                #
-                # create a structured array for the whole set:
-                CPU_H_mpp = numpy.zeros( (0, ), dtype=cpuh_dtype)
-                k0=0
-                for k,r in enumerate(res):
-                    #print('*** receiving r:: ', numpy.shape(r))
-                    #CPU_H_mpp[k0:k0+len(r)][:] = r[:]
-                    CPU_H_mpp = numpy.append(CPU_H_mpp, r)
-                    k0+=len(r)
-                #
-                return CPU_H_mpp
-        #
-        #
-        CPU_H = numpy.zeros( (n_points, ), dtype=cpuh_dtype)
-        
-        #print('*** DEBUG: shapes:: ', numpy.shape(t_now), numpy.shape(t_min), numpy.shape(t_max), numpy.shape(n_points), 
-        #      numpy.shape(t_start), numpy.shape(t_end),
-        #      numpy.shape(numpy.linspace(t_min, t_max, n_points)))
-        #
-        CPU_H['time'] = numpy.linspace(t_min, t_max, n_points)
-        CPU_H['t_start'] = CPU_H['time']-bin_size
-        #
-        if verbose:
-            print('*** ', cpu_h.shape)
-        #
-        for k,t in enumerate(CPU_H['time']):
-            # TODO: wrap this into a (@jit compiled) function to parallelize? or add a recursive block
-            #  to parralize the whole function, using an index to break it up.
-            ix_k = numpy.where(numpy.logical_and(t_start<=t, t_end>(t-bin_size) ))[0]
-            #print('*** shape(ix_k): {}//{}'.format(ix_k.shape, numpy.sum(ix_k)) )
-            #
-            N_ix = len(ix_k)
-            if N_ix==0:
-                CPU_H[k] = t, t-bin_size,0.,0.
-                continue
-            #
-            #print('** ** ', ix_k)
-            #CPU_H[k] = t, t-bin_size, numpy.sum( numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
-            #                    numpy.max([(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]]) )*24., N_ix
-            #print('*** *** ', k,t, N_ix, ix_k)
-            CPU_H[['cpu_hours', 'N_jobs']][k] = numpy.sum( (numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
-                numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] ), N_ix
-        #
-        #CPU_H['cpu_hours']*=24.
-        #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
-        return CPU_H
+    # GIT NOTE: deleting get_cpu_hours_depricated()
+    #  Current commit: commit d0872dbf00fd493fa4937d4b9030f9b5a927e21d
     #
     def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
         '''
@@ -594,8 +474,18 @@ class SACCT_data_handler(object):
         # @t_min: start time (aka, bin phase).
         # @ix: an index, aka user=my_user
         '''
+        #
         if verbose is None:
             verbose = self.verbose
+        #
+#        if t_min is None and 'start_date' in self.__dict__.keys():
+#            t_min = self.start_date
+#            #
+#        #
+#        if t_max is None and 'end_date' in self.__dict__.keys():
+#            t_max = self.end_date
+#            #
+#        #
         #
         mpp_chunksize = mpp_chunksize or self.chunk_size
         n_cpu = n_cpu or self.n_cpu
@@ -686,6 +576,31 @@ class SACCT_data_handler(object):
         #
         ix = self.jobs_summary['NCPUS']==n
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
+    #
+    def get_cpu_hours_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
+                              t_min=None, t_max=None, verbose=0):
+        # wrap cpu_hors layer cake into one function. Could further abstract this to layer-cake anything,
+        # but the added complexity in defining the timeseries-function then does not really help (i don't think)
+        #
+        jobs_summary = jobs_summary or self.jobs_summary
+        
+        #
+        if layers is None:
+            layers = [ky.decode() for ky in list(set(jobs_summary[layer_field]))]
+        layers = {ky:{} for ky in layers}
+        if verbose:
+            print('*** ', layers)
+        #
+        for ky in layers.keys():
+            if verbose:
+                print(f'*** ky: {ky}')
+            #
+            ix = jobs_summary[layer_field] == ky.encode()
+            layers[ky]['cpu_hours'] = self.get_cpu_hours(bin_size=bin_size, n_points=n_points, t_min=t_min, t_max=t_max,
+                                                jobs_summary=jobs_summary[ix])
+            layers[ky]['elapsed'] = numpy.sum(jobs_summary['Elapsed'][ix])
+        #
+        return layers
     #
     def export_primary_data(self, output_path='data/SACCT_full_data.csv', delim='\t'):
         # DEPRICATION: This does not appear to work very well, and we have HDF5 options, so consider this depricated
@@ -1153,6 +1068,7 @@ class SACCT_data_direct(SACCT_data_handler):
         ##########################
         #
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
+        self.attributes.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
         print('*** DEBUG: Now execute load_sacct_data(); options_str={}'.format(options_str))
         self.data = self.load_sacct_data(options_str=options_str, format_string=format_string)
@@ -2596,8 +2512,6 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     inputs.update({'t_min':t_min, 't_max':t_max})
     #
     # output container:
-#    # TODO: consider (??) allowing d_t designation, instead of n_points.
-#    #  this will better allow us to do complex masks, like M-F,8-5, etc.
 #    # eg:
     if not d_t is None:
         # NOTE: this assumes t=0 bins (eg, d_t = .1, t_min=1.05 will give 1.0, 1.1, 1.2, ..., no 1.05, 1.15, ....
@@ -2662,9 +2576,10 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
         #  to parralize the whole function, using an index to break it up.
         # NOTE / TODO: we *could* add additional masks or indices here to, for example, filter out weekends and after-hours (focus on M-F,8-5)
         #   jobs... but it's still hard
-        ix_k = numpy.where(numpy.logical_and(t_start<=t, t_end>(t-bin_size) ))[0]
+        ix_k = numpy.where(numpy.logical_and(t_start<=t, t_end>=(t-bin_size) ))[0]
         #print('*** shape(ix_k): {}//{}'.format(ix_k.shape, numpy.sum(ix_k)) )
         #
+        # If there are not jobs, ix_k will return empty; manually set it to 0s
         N_ix = len(ix_k)
         if N_ix==0:
             CPU_H[k] = t, t-bin_size,0.,0.
@@ -2675,7 +2590,7 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
         #                    numpy.max([(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]]) )*24., N_ix
         #print('*** *** ', k,t, N_ix, ix_k)
         #
-        # TODO: this can be made faster (probably?) by basically counting all the middle elements and only dong max(), min(), and arithmetic
+        # TODO: this can be made faster (probably?) by basically counting all the middle elements and only doing max(), min(), and arithmetic
         #  on the leading and trailing elemnents. But if that breaks vectorization, we'll give up those gains.
         CPU_H[['cpu_hours', 'N_jobs']][k] = numpy.sum( (numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
             numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] ), N_ix
@@ -2685,7 +2600,7 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     return CPU_H
 #
 #def active_jobs_cpu(n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
-def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000):
+def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.):
     '''
     # Since this is now procedural, let's phase out ix?. the class-resident version can keep it if so desired.
     # NOTE on parallelization: There is quite a bit of pre-processing front-matter, so it makes sense to separate the SPP and MPP, as opposed
@@ -2698,10 +2613,14 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     # @bin_size: size of bins. This will override n_points
     # @t_min: start time (aka, bin phase).
     # @ix: an index, aka user=my_user
+    # NOTE: see @mpp_chunksize below: speed performance was a big problem on Mazama, probably because it was IO limited? Not
+    #   seeing the same problem(s) on Sherlock, so some of these more desperate discussions of performance optimization can probably
+    #   be ignored.
     # @mpp_chunksize: batch size for MPP, in this case probably an apply_async(). Note that this has a significant affect on speed and parallelization
     #  performance, and optimal performance is probably related to maximal use of cache. For example, for moderate size data sets, the SPP speed might be ~20 sec,
     #  and the 2cpu, chunk_size=20000 might be 2 sec, then 1.5, 1.2, for 3,4 cores. toying with the chunk_size parameter suggests that cache size is the thing. It is
     #  probably worth circling back to see if map_async() can be made to work, since it probably has algorithms to estimate optimal chunk_size.
+    # @nan_to={val} set nan values to {val}. If None, skip this step. Default is 0.
     '''
     #
     # TODO: modify this to allow a d_t designation, instead of n_points, so we can specify -- for example, an hourly sequence.
@@ -2755,7 +2674,8 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     output = numpy.zeros( n_points, dtype=[('time', '>f8'),
                 ('N_jobs', '>f8'),
                 ('N_cpu', '>f8')])
-    output['time'] = numpy.linspace(t_min, t_max - (t_max - t_min)/n_points, n_points)
+    #output['time'] = numpy.linspace(t_min, t_max - (t_max - t_min)/n_points, n_points)
+    output['time'] = numpy.linspace(t_min, t_max, n_points)
     #
     # This is a slick, vectorized way to make an index, but It uses way too much memory, and so is probably too slow anyway
     #IX_t = numpy.logical_and( X.reshape(-1,1)>=t_start, (X-bin_size).reshape(-1,1)<t_end )
@@ -2787,6 +2707,11 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
         #   separately, just excluding the last element is not a very good fix; we should live with the artifact or fix the
         #   time axis.
         output['N_jobs'], output['N_cpu'] = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])
+        #
+        if not nan_to is None:
+            output['N_jobs'][numpy.isnan(output['N_jobs'])] = 0.
+            output['N_cpu'][numpy.isnan(output['N_cpu'])]   = 0.
+        #
         return output
         #
         #return numpy.core.records.fromarrays([numpy.linspace(t_min, t_max, n_points), *process_ajc_rows(t=numpy.linspace(t_min, t_max, n_points), t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])], dtype=[('time', '>f8'),
@@ -2841,5 +2766,14 @@ def process_ajc_rows(t, t_start, t_end, NCPUs):
 #
 def running_mean(X,n=10):
     return (numpy.cumsum(numpy.insert(X,0,0))[n:] - numpy.cumsum(numpy.insert(X,0,0))[:-n])/n
+#
+def flatten(A):
+    # flagrantly stollen from:
+    # https://stackoverflow.com/questions/17864466/flatten-a-list-of-strings-and-lists-of-strings-and-lists-in-python
+    rt = []
+    for i in A:
+        if isinstance(i,list): rt.extend(flatten(i))
+        else: rt.append(i)
+    return rt
 
 
