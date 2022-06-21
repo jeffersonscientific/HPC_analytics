@@ -152,6 +152,11 @@ class SACCT_data_handler(object):
     dtm_handler_default = str2date_num
     #
     #default_types_dict = default_SLURM_types_dict
+    # TODO: maybe... having some issues with direct loads having string ('value') type
+    # and HDF5 loads having bytearray (b'value'), and I don't know about from-text.
+    # This meanswe have to handle the case of to en/decode() or not to en/decode(), which
+    # is sometimes fairly difficult. What if we replace the str functions with a function
+    # str_endode(s): return str(s).encode() ?
     default_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
             'Timelimit':elapsed_time_2_day,
                 'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
@@ -1104,12 +1109,6 @@ class SACCT_data_direct(SACCT_data_handler):
         n_cpu = n_cpu or self.n_cpu
         n_cpu = n_cpu or 4
         #
-        # might want to force n_cpu>1...
-        #n_cpu = numpy.min(n_cpu,2)
-        #
-        #, raw_data_out_file=None
-        #raw_data_out_file = raw_data_out or self.raw_data_out_file
-        #
         verbose = verbose or self.verbose
         verbose = verbose or False
         #
@@ -1241,16 +1240,6 @@ class SACCT_data_direct(SACCT_data_handler):
         RH = {h:k for k,h in enumerate(headers)}
         #
         data = [self.process_row(rw.replace('\"', ''), headers=headers, RH=RH) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) and len(rw)>1 ]
-        #
-        # NOTE: added this (Very inefficient) step because I though it was failing to sort on the sort fields. It was really failing to sort on an empty set, so I think
-        # NOTE: But... it might make sense to sort here and eliminate duplicates. breaking a big query into lots of subquerries
-        # will likely produce lots of dupes.
-        #   we can skip this.
-        # exclude any rows with no submit date or jobid. I hate to nest this sort of logic here, but we seem to get these from time to time. I don't see how they can be valid.
-        #  that said... I think this was supposed to fix something that is not actually happening, so we can probably omit this step.
-        #data = [rw for rw in data if not (rw[RH['JobID']] is None or rw[RH['JobID']]=='' or rw[RH['Submit']] is None or rw[RH['Submit']])=='' ]
-        #
-        # pandas.DataFrame(data, columns=active_headers).to_records()
         #
         # this is a bit of a hack, but it should help with MPP.
         #
