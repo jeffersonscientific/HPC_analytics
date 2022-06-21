@@ -581,24 +581,26 @@ class SACCT_data_handler(object):
                               t_min=None, t_max=None, verbose=0):
         # wrap cpu_hors layer cake into one function. Could further abstract this to layer-cake anything,
         # but the added complexity in defining the timeseries-function then does not really help (i don't think)
+        # TODO: reformat the output to return more easily plotted recarrays (or similar).
+        # return {layer: {time:[], cpuh:[], 
         #
         jobs_summary = jobs_summary or self.jobs_summary
         
         #
         if layers is None:
-            layers = [ky.decode() for ky in list(set(jobs_summary[layer_field]))]
+            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
         layers = {ky:{} for ky in layers}
         if verbose:
             print('*** ', layers)
         #
         for ky in layers.keys():
             if verbose:
-                print(f'*** ky: {ky}')
+                print(f'*** ky: {ky} // {ky.encode()}')
             #
-            ix = jobs_summary[layer_field] == ky.encode()
+            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
             layers[ky]['cpu_hours'] = self.get_cpu_hours(bin_size=bin_size, n_points=n_points, t_min=t_min, t_max=t_max,
                                                 jobs_summary=jobs_summary[ix])
-            layers[ky]['elapsed'] = numpy.sum(jobs_summary['Elapsed'][ix])
+            layers[ky]['elapsed'] = numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
         #
         return layers
     #
