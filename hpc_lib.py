@@ -463,7 +463,7 @@ class SACCT_data_handler(object):
     # GIT NOTE: deleting get_cpu_hours_depricated()
     #  Current commit: commit d0872dbf00fd493fa4937d4b9030f9b5a927e21d
     #
-    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
+    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None, nan_to=0.):
         '''
         ##
         # Use out-of-class procedural function to improve parallelization (or at least development of parallel code).
@@ -501,7 +501,7 @@ class SACCT_data_handler(object):
             jobs_summary=jobs_summary[ix]
         #
         return active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu, jobs_summary=jobs_summary,
-            verbose=verbose, mpp_chunksize=mpp_chunksize)
+            verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to)
     #
     # GIT Note (commit d16fd6a941c769fbce2da54e067686a1ca0b6c2f): Removing active_jobs_cpu_DEPRICATED(self,...).
     #   functional code moved out of class to facilitate development (and MPP mabye??)
@@ -574,18 +574,89 @@ class SACCT_data_handler(object):
     def get_wait_times_per_ncpu(self, n_cpu):
         # get wait-times for n_cpu cpus. to be used independently or as an MPP worker function.
         #
-        ix = self.jobs_summary['NCPUS']==n
+        ix = self.jobs_summary['NCPUS']==n_cpu
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
+    #
+    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=None, mpp_chunksize=10000, nan_to=0.):
+        # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
+        jobs_summary = jobs_summary or self.jobs_summary
+        #
+        if layers is None:
+            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
+        layers = {ky:{} for ky in layers}
+        if verbose:
+            print('*** ', layers)
+        #
+        dtype_cpuh = [(s, '>f8') for s in ['time'] + list(layers.keys())]
+        dtype_jobs = dtype_cpuh
+        #
+        # NOTE: Do we want to return both of these, or only one of them? Maybe an otion?
+        output_cpus = numpy.empty( (n_points, ), dtype=dtype_cpuh )
+        output_jobs = numpy.empty( (n_points, ), dtype=dtype_jobs )
+        #
+        for j, ky in enumerate(layers.keys()):
+            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
+            XX = self.active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu,
+                                     jobs_summary=jobs_summary[ix], verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to)
+            #
+            output_cpus[ky] = XX['N_cpu'][:]
+            output_jobs[ky] = XX['N_jobs'][:]
+        #
+        output_cpus['time'] = XX['time']
+        output_jobs['time'] = XX['time']
+        #
+        return {'N_cpu': output_cpus, 'N_jobs': output_jobs}
+        
+    #
+    def get_cpu_hours_layer_cake_2(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
+                              t_min=None, t_max=None, verbose=0):
+        '''
+        # revised version of gchlc with a more intuitive output.
+        #
+        '''
+        #
+        jobs_summary = jobs_summary or self.jobs_summary
+        #
+        if layers is None:
+            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
+        layers = {ky:{} for ky in layers}
+        if verbose:
+            print('*** ', layers)
+        #
+        dtype_cpuh = [(s, '>f8') for s in ['time'] + list(layers.keys())]
+        dtype_jobs = dtype_cpuh
+        
+        output_cpuh = numpy.empty( (n_points, ), dtype=dtype_cpuh )
+        output_jobs = numpy.empty( (n_points, ), dtype=dtype_jobs )
+        output_elapsed = {s:0 for s in layers}
+        #
+        for j, ky in enumerate(layers.keys()):
+            if verbose:
+                print(f'*** ky: {ky} // {ky.encode()}')
+            #
+            # NOTE: should not need the en/decode() logic any more; that should be fixed in the HDF5 subclase, but it won't hurt...
+            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
+            XX = self.get_cpu_hours(bin_size=bin_size, n_points=n_points, t_min=t_min, t_max=t_max,
+                                                jobs_summary=jobs_summary[ix])
+            output_cpuh[ky] = XX['cpu_hours'][:]
+            output_jobs[ky] = XX['N_jobs'][:]
+            output_elapsed[ky] =  numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
+        #
+        output_cpuh['time'] = XX['time']
+        output_jobs['time'] = XX['time']
+        #
+        return {'cpu_hours': output_cpuh, 'jobs':output_jobs, 'elapsed':output_elapsed}
+            
     #
     def get_cpu_hours_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
                               t_min=None, t_max=None, verbose=0):
+        # TODO: depricate this version of get_cpu_hours_layer_cake()
         # wrap cpu_hors layer cake into one function. Could further abstract this to layer-cake anything,
         # but the added complexity in defining the timeseries-function then does not really help (i don't think)
         # TODO: reformat the output to return more easily plotted recarrays (or similar).
         # return {layer: {time:[], cpuh:[], 
         #
         jobs_summary = jobs_summary or self.jobs_summary
-        
         #
         if layers is None:
             layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
@@ -1291,9 +1362,29 @@ class SACCT_data_from_h5(SACCT_data_handler):
                 # is this a good idea? this should be lioke self.ky=ary[:], but I always wonder
                 #  if hijackeing the internal __dict__ is a bad idea...
                 #
+                # Handle jobs sumamry string/byte encoding. NOTE: this could probably be generally applied to all arrays.
+                if ky == 'jobs_summary':
+                    dtp = [(nm, d[0] if (isinstance(d,tuple) and d[0].startswith('|S')) else d ) for nm,d in ary.dtype.descr ]
+                    self.__dict__[ky] = numpy.empty( (len(ary), ), dtype=dtp)
+                    #
+                    # DEBUG:
+                    #print('** * ** ', self.__dict__[ky].dtype)
+                    #print('** * ** ', numpy.shape(self.__dict__[ky]), len(ary), numpy.shape(self.__dict__[ky]))
+                    #print('** * ** ', self.__dict__[ky].dtype)
+                    for cl,tp in ary.dtype.descr:
+                        #self.__dict__[ky][cl] = (ary[cl].astype(str)[:] if (isinstance(tp,tuple) and tp[0].startswith('|S') ) else ary[cl][:])
+                        self.__dict__[ky][cl] = ([s.decode() for s in ary[cl]] if (isinstance(tp,tuple) and tp[0].startswith('|S') ) else ary[cl][:])
+                #
                 self.__dict__[ky]=ary[:]
             del ky,ary
         #
+        # Now, modify jobs_summary to use plain string, not byte-array, types?:
+#        new_dtype = [(nm, d[0] if (isinstance(d,tuple) and d[0].startswith('|S')) else d )for s,d in self.jobs_summary.dtype.descr )]
+#        new_js = numpy.array(len(self.jobs_summary), dtype=new_dtype)
+#        for cl,d in new_js.dtype.descr:
+#            if d.startswith('|S'):
+#                new_js[cl] = self.jobs_summary[cl].
+#        #
         self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
             #
         #
