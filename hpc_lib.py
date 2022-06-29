@@ -29,6 +29,15 @@ import pylab as plt
 #
 day_2_sec=24.*3600.
 #
+# NOTE: matplotlib.dates changed the standard reference epoch. This is mainly to mitigate roundin errors in modern
+#  dates. You can use set_/get_epoch() to read and modify the epoch, but there are rules about doing this
+#  before figures are plotted, etc. It's typical affect is cosmetic, so differencing dates, elapsed times, etc.
+#  will not change (much). Looks like the best way to handle this is to augment the numerical dates.
+old_mpd_epoch = '0000-12-31T00:00:00'
+new_mpd_epoch = '1970-01-01T00:00:00'
+dt_mpd_epoch = 719163.0
+
+#
 #default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,'Timelimit':elapsed_time_2_day, 'Start':dtm_handler_default, 'Eligible':dtm_handler_default, 'Elapsed':elapsed_time_2_day, 'MaxRSS':str, 'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day, 'NTasks':int}
 #
 # TODO: move group_ids, and local-specific things like that to site-specific  modules or data files.
@@ -213,6 +222,32 @@ class SACCT_data_handler(object):
         #
         self.attributes['h5out_file'] = h5out_file
         self.attributes['RH'] = self.RH
+        #
+        # NOTE: matplotlib.dates changed its default reference epoch, for numerical date conversion, from
+        #   0000-12-31 to 1970-1-1. switching the epoch can be tricky; different versions of mpd can give
+        #   weird years. let's handle it here, assuming modern dates:
+#        dt_epoch = 0.
+#        yr_test = mpd.num2date(SACCT_obj.jobs_summary['Start'][0]).year
+#        if yr_test > 3000:
+#            dt_epoch = -dt_mpd_epoch
+#        if yr_tesst < 1000:
+#            dt_epoch =  dt_mod_epoch
+        dt_mod_epoch = self.compute_mpd_epoch
+        #
+        print(f'*** DEBUG:: epoch: {dt_epoch}')
+        self.dt_mpd_epoch = self.compute_mpd_epoch_dt()
+    #
+    def compute_mpd_epoch_dt(self, test_col='Start', test_index=0, yr_upper=3000, yr_lower=1000):
+        #
+        dt_epoch = 0.
+        yr_test = mpd.num2date(self.jobs_summary[test_col][test_index]).year
+        if yr_test > yr_upper:
+            dt_epoch = -dt_mpd_epoch
+        if yr_test < yr_lower:
+            dt_epoch =  dt_mod_epoch
+        #
+        return dt_epoch
+        
     #
     def calc_summaries(self, n_cpu=None, chunk_size=None, t_min=None, t_max=None):
         #
@@ -468,7 +503,7 @@ class SACCT_data_handler(object):
     # GIT NOTE: deleting get_cpu_hours_depricated()
     #  Current commit: commit d0872dbf00fd493fa4937d4b9030f9b5a927e21d
     #
-    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
+    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None, nan_to=0.):
         '''
         ##
         # Use out-of-class procedural function to improve parallelization (or at least development of parallel code).
@@ -506,7 +541,7 @@ class SACCT_data_handler(object):
             jobs_summary=jobs_summary[ix]
         #
         return active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu, jobs_summary=jobs_summary,
-            verbose=verbose, mpp_chunksize=mpp_chunksize)
+            verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to)
     #
     # GIT Note (commit d16fd6a941c769fbce2da54e067686a1ca0b6c2f): Removing active_jobs_cpu_DEPRICATED(self,...).
     #   functional code moved out of class to facilitate development (and MPP mabye??)
@@ -579,18 +614,89 @@ class SACCT_data_handler(object):
     def get_wait_times_per_ncpu(self, n_cpu):
         # get wait-times for n_cpu cpus. to be used independently or as an MPP worker function.
         #
-        ix = self.jobs_summary['NCPUS']==n
+        ix = self.jobs_summary['NCPUS']==n_cpu
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
+    #
+    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=None, mpp_chunksize=10000, nan_to=0.):
+        # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
+        jobs_summary = jobs_summary or self.jobs_summary
+        #
+        if layers is None:
+            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
+        layers = {ky:{} for ky in layers}
+        if verbose:
+            print('*** ', layers)
+        #
+        dtype_cpuh = [(s, '>f8') for s in ['time'] + list(layers.keys())]
+        dtype_jobs = dtype_cpuh
+        #
+        # NOTE: Do we want to return both of these, or only one of them? Maybe an otion?
+        output_cpus = numpy.empty( (n_points, ), dtype=dtype_cpuh )
+        output_jobs = numpy.empty( (n_points, ), dtype=dtype_jobs )
+        #
+        for j, ky in enumerate(layers.keys()):
+            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
+            XX = self.active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu,
+                                     jobs_summary=jobs_summary[ix], verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to)
+            #
+            output_cpus[ky] = XX['N_cpu'][:]
+            output_jobs[ky] = XX['N_jobs'][:]
+        #
+        output_cpus['time'] = XX['time']
+        output_jobs['time'] = XX['time']
+        #
+        return {'N_cpu': output_cpus, 'N_jobs': output_jobs}
+        
     #
     def get_cpu_hours_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
                               t_min=None, t_max=None, verbose=0):
+        '''
+        # revised version of gchlc with a more intuitive output.
+        #
+        '''
+        #
+        jobs_summary = jobs_summary or self.jobs_summary
+        #
+        if layers is None:
+            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
+        layers = {ky:{} for ky in layers}
+        if verbose:
+            print('*** ', layers)
+        #
+        dtype_cpuh = [(s, '>f8') for s in ['time'] + list(layers.keys())]
+        dtype_jobs = dtype_cpuh
+        
+        output_cpuh = numpy.empty( (n_points, ), dtype=dtype_cpuh )
+        output_jobs = numpy.empty( (n_points, ), dtype=dtype_jobs )
+        output_elapsed = {s:0 for s in layers}
+        #
+        for j, ky in enumerate(layers.keys()):
+            if verbose:
+                print(f'*** ky: {ky} // {ky.encode()}')
+            #
+            # NOTE: should not need the en/decode() logic any more; that should be fixed in the HDF5 subclase, but it won't hurt...
+            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
+            XX = self.get_cpu_hours(bin_size=bin_size, n_points=n_points, t_min=t_min, t_max=t_max,
+                                                jobs_summary=jobs_summary[ix])
+            output_cpuh[ky] = XX['cpu_hours'][:]
+            output_jobs[ky] = XX['N_jobs'][:]
+            output_elapsed[ky] =  numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
+        #
+        output_cpuh['time'] = XX['time']
+        output_jobs['time'] = XX['time']
+        #
+        return {'cpu_hours': output_cpuh, 'jobs':output_jobs, 'elapsed':output_elapsed}
+            
+    #
+    def get_cpu_hours_layer_cake_depricated(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
+                              t_min=None, t_max=None, verbose=0):
+        # TODO: This version of get_cpu_hours_layer_cake() is deprecated. Phase it out.
         # wrap cpu_hors layer cake into one function. Could further abstract this to layer-cake anything,
         # but the added complexity in defining the timeseries-function then does not really help (i don't think)
         # TODO: reformat the output to return more easily plotted recarrays (or similar).
         # return {layer: {time:[], cpuh:[], 
         #
         jobs_summary = jobs_summary or self.jobs_summary
-        
         #
         if layers is None:
             layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
@@ -1280,9 +1386,30 @@ class SACCT_data_from_h5(SACCT_data_handler):
                 # is this a good idea? this should be lioke self.ky=ary[:], but I always wonder
                 #  if hijackeing the internal __dict__ is a bad idea...
                 #
+                # Handle jobs sumamry string/byte encoding. NOTE: this could probably be generally applied to all arrays.
+                if ky == 'jobs_summary':
+                    dtp = [(nm, d[0] if (isinstance(d,tuple) and d[0].startswith('|S')) else d ) for nm,d in ary.dtype.descr ]
+                    self.__dict__[ky] = numpy.empty( (len(ary), ), dtype=dtp)
+                    #
+                    # DEBUG:
+                    #print('** * ** ', self.__dict__[ky].dtype)
+                    #print('** * ** ', numpy.shape(self.__dict__[ky]), len(ary), numpy.shape(self.__dict__[ky]))
+                    #print('** * ** ', self.__dict__[ky].dtype)
+                    for cl,tp in ary.dtype.descr:
+                        #self.__dict__[ky][cl] = (ary[cl].astype(str)[:] if (isinstance(tp,tuple) and tp[0].startswith('|S') ) else ary[cl][:])
+                        self.__dict__[ky][cl] = ([s.decode() for s in ary[cl]] if (isinstance(tp,tuple) and tp[0].startswith('|S') ) else ary[cl][:])
+                #
                 self.__dict__[ky]=ary[:]
             del ky,ary
+        self.dt_mpd_epoch = self.compute_mpd_epoch_dt()
         #
+        # Now, modify jobs_summary to use plain string, not byte-array, types?:
+#        new_dtype = [(nm, d[0] if (isinstance(d,tuple) and d[0].startswith('|S')) else d )for s,d in self.jobs_summary.dtype.descr )]
+#        new_js = numpy.array(len(self.jobs_summary), dtype=new_dtype)
+#        for cl,d in new_js.dtype.descr:
+#            if d.startswith('|S'):
+#                new_js[cl] = self.jobs_summary[cl].
+#        #
         self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
             #
         #
@@ -1309,6 +1436,7 @@ class SACCT_data_from_h5(SACCT_data_handler):
         self.h5out_file = h5out_file
         #
 #
+# TODO: move class Tex_Slides() to hpc_reports.py . This might have been done, or it was rewritten there. Either way, TODO: delete it from hpc_lib.
 class Tex_Slides(object):
     def __init__(self, template_json='tex_components/EARTH_Beamer_template.json',
                  Short_title='', Full_title='Title',
@@ -2592,6 +2720,11 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
 #def active_jobs_cpu(n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
 def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.):
     '''
+    # TODO: Facilitate GPU computation...
+    #  We could just add a GPUs column to this, but I think a more elegant solution is to add NCPUS
+    #  as an optional parameter. Default behavior will be to get it from jobs_sumamry (current behavior);
+    #  alternatively, an array like NGPUs can be provided.
+    #
     # Since this is now procedural, let's phase out ix?. the class-resident version can keep it if so desired.
     # NOTE on parallelization: There is quite a bit of pre-processing front-matter, so it makes sense to separate the SPP and MPP, as opposed
     #  to doing a recursive callback. Basically, we put in a fair bit of work to construct our working data; it would be expensive to do it again,
@@ -2704,8 +2837,6 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
         #
         return output
         #
-        #return numpy.core.records.fromarrays([numpy.linspace(t_min, t_max, n_points), *process_ajc_rows(t=numpy.linspace(t_min, t_max, n_points), t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])], dtype=[('time', '>f8'),
-        #        ('N_jobs', '>f8'), ('N_cpu', '>f8')])
     else:
 #        output = numpy.zeros( n_points, dtype=[('time', '>f8'),
 #                ('N_jobs', '>f8'),
@@ -2752,6 +2883,8 @@ def process_ajc_rows(t, t_start, t_end, NCPUs):
     #ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
     ix_t = numpy.logical_and(t_start <= t.reshape(-1,1), t_end >= t.reshape(-1,1))
     #
+    # TODO: add gpus here? add NGPUs as an optional input? Alternatively, we could just use this function
+    #  but replace NCPUs with NGPUs... which I think was the original intention.
     return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[js]) for js in ix_t])])
 #
 def running_mean(X,n=10):
@@ -2765,5 +2898,39 @@ def flatten(A):
         if isinstance(i,list): rt.extend(flatten(i))
         else: rt.append(i)
     return rt
+#
+def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
+    '''
+    # general handler for layer cake plots. Assume data is like [[time, {data cols}]].
+    # Question: qualify this geometrically (dtype.names[1:]) or by value
+    #  ([cl for cl in dtype.names if not cl=='time'] ?
+    #  Or does that depend on the input type?
+    #  we'll want to allow structured arrays and dict type.
+    '''
+    #
+    if ax is None:
+        fg = plt.figure(figsize=(10,8))
+        ax = fg.add_subplot(1,1,1)
+    #
+    if layers is None:
+        if hasattr(data, 'dtype'):
+            layers = data.dtype.names[1:]
+        else:
+            layers = [ky for ky in data.keys() if not ky == time_col]
+        #
+    #
+    T = data[time_col]
+    #
+    z = numpy.zeros(len(data))
+    for lyr in layers:
+        # there are more efficient ways to do this, but this will be fine...
+        z_prev = z.copy()
+        z += data[lyr]
+        #
+        ln, = ax.plot(T,z, ls='-', alpha=.8)
+        clr = ln.get_color()
+        ax.fill_between(T, z_prev, z, color=clr, alpha=.2, label=lyr)
+    #
+    return None
 
 
