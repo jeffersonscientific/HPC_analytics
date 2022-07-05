@@ -154,15 +154,26 @@ def write_sacct_batch_script():
     return None
 
 kmg_vals = {'k':1E3, 'm':1E6, 'g':1E9, 't':1E12}
-def kmg_num_to_num(x):
+def kmg_to_num(x):
     '''
     # convert something like 25k to 25000
     # for now, assume xxxU format.
     '''
     #
-    
+    #if isinstance(x, (float, int)):
+    #    return x
+    try:
+        return float(x)
+    except:
+      pass
     #
-    return float(x[:-1]) * kmg_vals[x[-1].lower()]
+    if x is None or x=='':
+      return None
+    #
+    try:
+        return float(x[:-1]) * kmg_vals[x[-1].lower()]
+    except:
+        return None
 #
 class SACCT_data_handler(object):
     #
@@ -172,21 +183,17 @@ class SACCT_data_handler(object):
     dtm_handler_default = str2date_num
     #
     #default_types_dict = default_SLURM_types_dict
-    # yoder: adding vmsize, rss, and IO 
+    # yoder: adding vmsize, rss, and IO
     default_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
             'Timelimit':elapsed_time_2_day,
                 'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
                         'Eligible':dtm_handler_default,
-                    'Elapsed':elapsed_time_2_day, 'MaxRSS':str,
-            'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':elapsed_time_2_day,
-                        'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day, 'NTasks':int,
-                        'maxrss':kmg_num_to_num, 'averss':kmg_num_to_num,
-                        'maxvmsize':kmg_num_to_num,'avevmsize':kmg_num_to_num,
-                        'maxdiskwrite':kmg_num_to_num, 'avediskwrite':kmg_num_to_num,
-                        'maxdiskread':kmg_num_to_num}, 'avediskread':kmg_num_to_num
-                        }
-                        
-}
+                    'Elapsed':elapsed_time_2_day, 'MaxRSS':kmg_to_num, 'AveRSS':kmg_to_num,
+                    'maxvmsize':kmg_to_num,'avevmsize':kmg_to_num,  'NNodes':int, 'NCPUS':int,
+                     'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day,
+                    'NTasks':int,'maxdiskwrite':kmg_to_num, 'avediskwrite':kmg_to_num,
+                        'maxdiskread':kmg_to_num, 'avediskread':kmg_to_num
+                    }
     #
     time_units_labels={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes','minute':'minutes', 'minutes':'minutes', 'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
     #    
@@ -393,7 +400,6 @@ class SACCT_data_handler(object):
     def load_sacct_data(self, data_file_name=None, delim=None, verbose=1, max_rows=None, chunk_size=None, n_cpu=None):
         # TODO: this should probably be a class of its own. Note that it depends on a couple of class-scope functions in
         #  ways that are not really class hierarchically compatible.
-        # TODO: add capability to execute sacct queries. This is not practical on Mazama, but very feasible on Mazama.
         if data_file_name is None:
             data_file_name = self.data_file_name
         if delim is None:
@@ -1131,7 +1137,8 @@ class SACCT_data_handler(object):
 class SACCT_data_direct(SACCT_data_handler):
     format_list_default = ['User', 'Group', 'GID', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
-               'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES']
+               'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES', 'MaxRSS', 'AveRSS', 'AveVMsize', 'MaxVMsize',
+               'MaxDiskWrite', 'MaxDiskRead', 'AveDiskWrite', 'AveDiskRead']
     def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=10, default_catalog_length=180,
         format_list=None, n_cpu=None, types_dict=None, verbose=0, chunk_size=1000,
         h5out_file=None, keep_raw_data=False, raw_output_file=None, n_points_usage=1000,
