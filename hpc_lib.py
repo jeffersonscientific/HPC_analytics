@@ -152,6 +152,17 @@ def write_sacct_batch_script():
     #  not batch the sacct separately.
     '''
     return None
+
+kmg_vals = {'k':1E3, 'm':1E6, 'g':1E9, 't':1E12}
+def kmg_num_to_num(x):
+    '''
+    # convert something like 25k to 25000
+    # for now, assume xxxU format.
+    '''
+    #
+    
+    #
+    return float(x[:-1]) * kmg_vals[x[-1].lower()]
 #
 class SACCT_data_handler(object):
     #
@@ -161,13 +172,21 @@ class SACCT_data_handler(object):
     dtm_handler_default = str2date_num
     #
     #default_types_dict = default_SLURM_types_dict
+    # yoder: adding vmsize, rss, and IO 
     default_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
             'Timelimit':elapsed_time_2_day,
                 'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
                         'Eligible':dtm_handler_default,
                     'Elapsed':elapsed_time_2_day, 'MaxRSS':str,
             'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':elapsed_time_2_day,
-                        'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day, 'NTasks':int}
+                        'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day, 'NTasks':int,
+                        'maxrss':kmg_num_to_num, 'averss':kmg_num_to_num,
+                        'maxvmsize':kmg_num_to_num,'avevmsize':kmg_num_to_num,
+                        'maxdiskwrite':kmg_num_to_num, 'avediskwrite':kmg_num_to_num,
+                        'maxdiskread':kmg_num_to_num}, 'avediskread':kmg_num_to_num
+                        }
+                        
+}
     #
     time_units_labels={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes','minute':'minutes', 'minutes':'minutes', 'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
     #    
@@ -226,23 +245,34 @@ class SACCT_data_handler(object):
 #        if yr_test > 3000:
 #            dt_epoch = -dt_mpd_epoch
 #        if yr_tesst < 1000:
-#            dt_epoch =  dt_mod_epoch
-        dt_mod_epoch = self.compute_mpd_epoch
+#            dt_epoch =  dt_mod_epochj
+        # what does this do? I think we can get rid of it...
+        #dt_mod_epoch = self.compute_mpd_epoch
         #
         print(f'*** DEBUG:: epoch: {dt_epoch}')
         self.dt_mpd_epoch = self.compute_mpd_epoch_dt()
     #
+    def get_NGPUs(self, jobs_summary=None):
+        jobs_summary = jobs_summary or self.jobs_summary
+        #
+        return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
+         for s in jobs_summary['AllocTRES'].astype(str)])
+    #
     def compute_mpd_epoch_dt(self, test_col='Start', test_index=0, yr_upper=3000, yr_lower=1000):
         #
-        dt_epoch = 0.
-        yr_test = mpd.num2date(self.jobs_summary[test_col][test_index]).year
-        if yr_test > yr_upper:
-            dt_epoch = -dt_mpd_epoch
-        if yr_test < yr_lower:
-            dt_epoch =  dt_mod_epoch
+        test_date = self.jobs_summary[test_col][test_index]
+        if isinstance(test_date, dtm.datetime):
+            test_date = mpd.date2num(test_date)
+#        dt_epoch = 0.
+#        yr_test = mpd.num2date(self.jobs_summary[test_col][test_index]).year
+#        if yr_test > yr_upper:
+#            dt_epoch = -dt_mpd_epoch
+#        if yr_test < yr_lower:
+#            dt_epoch =  dt_mod_epoch
         #
-        return dt_epoch
-        
+        #return dt_epoch
+
+        return compute_mpd_epoch_dt(test_date, yr_upper=yr_upper, yr_lower=yr_lower)
     #
     def calc_summaries(self, n_cpu=None, chunk_size=None, t_min=None, t_max=None):
         #
@@ -498,7 +528,7 @@ class SACCT_data_handler(object):
     # GIT NOTE: deleting get_cpu_hours_depricated()
     #  Current commit: commit d0872dbf00fd493fa4937d4b9030f9b5a927e21d
     #
-    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None, nan_to=0.):
+    def active_jobs_cpu(self, n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None, nan_to=0., NCPUs=None):
         '''
         ##
         # Use out-of-class procedural function to improve parallelization (or at least development of parallel code).
@@ -536,7 +566,7 @@ class SACCT_data_handler(object):
             jobs_summary=jobs_summary[ix]
         #
         return active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu, jobs_summary=jobs_summary,
-            verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to)
+            verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to, NCPUs=NCPUs)
     #
     # GIT Note (commit d16fd6a941c769fbce2da54e067686a1ca0b6c2f): Removing active_jobs_cpu_DEPRICATED(self,...).
     #   functional code moved out of class to facilitate development (and MPP mabye??)
@@ -612,9 +642,11 @@ class SACCT_data_handler(object):
         ix = self.jobs_summary['NCPUS']==n_cpu
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
     #
-    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=None, mpp_chunksize=10000, nan_to=0.):
+    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=None, mpp_chunksize=10000, nan_to=0., NCPUs=None):
         # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
         jobs_summary = jobs_summary or self.jobs_summary
+        if NCPUs is None or NCPUs=='':
+            NCPUs = jobs_summary['NCPUS']
         #
         if layers is None:
             layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
@@ -632,7 +664,8 @@ class SACCT_data_handler(object):
         for j, ky in enumerate(layers.keys()):
             ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
             XX = self.active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu,
-                                     jobs_summary=jobs_summary[ix], verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to)
+                                     jobs_summary=jobs_summary[ix], verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to,
+                                     NCPUs=NCPUs[ix])
             #
             output_cpus[ky] = XX['N_cpu'][:]
             output_jobs[ky] = XX['N_jobs'][:]
@@ -2728,8 +2761,7 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
     return CPU_H
 #
-#def active_jobs_cpu(n_points=5000, ix=None, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=None):
-def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.):
+def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0., NCPUs=None):
     '''
     # TODO: Facilitate GPU computation...
     #  We could just add a GPUs column to this, but I think a more elegant solution is to add NCPUS
@@ -2755,11 +2787,16 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     #  and the 2cpu, chunk_size=20000 might be 2 sec, then 1.5, 1.2, for 3,4 cores. toying with the chunk_size parameter suggests that cache size is the thing. It is
     #  probably worth circling back to see if map_async() can be made to work, since it probably has algorithms to estimate optimal chunk_size.
     # @nan_to={val} set nan values to {val}. If None, skip this step. Default is 0.
+    # @NCPUs=None : vector of NCPU values. Default will be to use jobs_summary['NCPUS'], or we can provide -- for
+    #  examle, a vector of NGPUs.
     '''
     #
     # TODO: modify this to allow a d_t designation, instead of n_points, so we can specify -- for example, an hourly sequence.
     # DEBUG: for now, just set n_cpu=1. we should be able to run this and fix the mpp later...
     #n_cpu=1
+    #
+    if NCPUs is None:
+        NCPUs = jobs_summary['NCPUS']
     #
     # empty container:
     null_return = lambda: numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
@@ -2840,7 +2877,10 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
         #   time ends up falls outside the start/stop time domain??? I guess though... since the time axis is constructecd
         #   separately, just excluding the last element is not a very good fix; we should live with the artifact or fix the
         #   time axis.
-        output['N_jobs'], output['N_cpu'] = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])
+        #
+        # yoder, 2022-06-24: jobs_sumamry['NCPUS'] --> NCPUs
+        #output['N_jobs'], output['N_cpu'] = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=jobs_summary['NCPUS'])
+        output['N_jobs'], output['N_cpu'] = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=NCPUs)
         #
         if not nan_to is None:
             output['N_jobs'][numpy.isnan(output['N_jobs'])] = 0.
@@ -2862,8 +2902,11 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
             # need to break this into small enough chunks to not break the pickle() indexing.
             # smaller of N/n_cpu or N/chunk_size
             #
+            # yoder, 2022-06-24: jobs_sumamry['NCPUS'] --> NCPUs
+            #results = [P.apply_async(process_ajc_rows,  kwds={'t':output['time'], 't_start':t_start[k1:k2],
+            #            't_end':t_end[k1:k2], 'NCPUs':jobs_summary['NCPUS'][k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
             results = [P.apply_async(process_ajc_rows,  kwds={'t':output['time'], 't_start':t_start[k1:k2],
-                        't_end':t_end[k1:k2], 'NCPUs':jobs_summary['NCPUS'][k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
+                        't_end':t_end[k1:k2], 'NCPUs':NCPUs[k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
             #
             R = [r.get() for r in results]
         #  still can't quite explain why the SPP seems to be much much much (non-linerly) slower than mpp (on Mazama)
@@ -2894,12 +2937,30 @@ def process_ajc_rows(t, t_start, t_end, NCPUs):
     #ix_t = numpy.logical_and(t_start<=t.reshape(-1,1), t_end>t.reshape(-1,1))
     ix_t = numpy.logical_and(t_start <= t.reshape(-1,1), t_end >= t.reshape(-1,1))
     #
-    # TODO: add gpus here? add NGPUs as an optional input? Alternatively, we could just use this function
-    #  but replace NCPUs with NGPUs... which I think was the original intention.
     return numpy.array([numpy.sum(ix_t, axis=1), numpy.array([numpy.sum(NCPUs[js]) for js in ix_t])])
 #
 def running_mean(X,n=10):
     return (numpy.cumsum(numpy.insert(X,0,0))[n:] - numpy.cumsum(numpy.insert(X,0,0))[:-n])/n
+#
+
+def compute_mpd_epoch_dt(test_date, yr_upper=3000, yr_lower=1000):
+    '''
+    # matplotlib.dates can use different epoch reference times. Older default was 0:000-12:32; newer is 0:1970-1-1 (I think).
+    # use this to guess which epoch it is! Use this if you have data whose encoding is uncertain. It should give +/- a standard
+    # value that will correct either encoding to the executing version of mpd .
+    '''
+    dt_epoch = 0.
+    if isinstance(test_date, float) or isinstance(test_date, int):
+        test_date = mpd.num2date(test_date)
+    yr_test = test_date.year
+    #
+    #yr_test = mpd.num2date(test_date).year
+    if yr_test > yr_upper:
+        dt_epoch = -dt_mpd_epoch
+    if yr_test < yr_lower:
+        dt_epoch =  dt_mod_epoch
+    #
+    return dt_epoch
 #
 def flatten(A):
     # flagrantly stollen from:
@@ -2922,6 +2983,7 @@ def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
     if ax is None:
         fg = plt.figure(figsize=(10,8))
         ax = fg.add_subplot(1,1,1)
+    fg = ax.get_figure()
     #
     if layers is None:
         if hasattr(data, 'dtype'):
@@ -2942,6 +3004,57 @@ def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
         clr = ln.get_color()
         ax.fill_between(T, z_prev, z, color=clr, alpha=.2, label=lyr)
     #
-    return None
-
+    fg.canvas.draw()
+    dt_epoch = compute_mpd_epoch_dt(T[0])
+    lbls = [simple_date_string(mpd.num2date(float(fix_to_ascii(str(s.get_text()))) + dt_epoch) )
+              for s in ax.get_xticklabels()]
+    ax.set_xticklabels(lbls)
+    #
+    return numpy.array([T,z]).transpose()
+#
+def get_pie_slices(sum_data, slice_data, slice_names=None):
+    '''
+    # basically, aggregate col_sum in groups of slice_names (which by default = unique(col_slices))
+    # One tricky point is, to_encode() or not_to_encode().
+    # For now, I think we can leave this to the user to control as input. By default, it will work
+    # correctly, since the slice_names will be taken from data[col_slices]
+    # @sum_data: a vector of data to sum by group
+    # @slice_data: index is constructed from @slice data
+    # @slice_names: slices. if None, all unique values from slice_data.
+    #  eg, slice_k = sum(sum_data[slice_data==slice_name_k])
+    '''
+    #
+    if slice_names is None:
+        #slice_names = list(set(slice_data))
+        slice_names = numpy.unique(slice_data)
+    #
+    # This is probably the 'right' way to do this:
+    slice_names = numpy.array(slice_names).astype(numpy.array(slice_data).dtype)
+    #
+    return numpy.array([[ky,numpy.sum(sum_data[slice_data==ky])] for ky in slice_names])
+#
+def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, wedgeprops=None, ax=None):
+    '''
+    # make a pie chart using the get_pie_slices() helper function.
+    # @sum_data: a vector of data to sum by group
+    # @slice_data: index is constructed from @slice data
+    # @slice_names: slices. if None, all unique values from slice_data.
+    # @n_decimals: number of decimals in values for labels, eg slice_name: xxx.yy . If None, no values.
+    #  eg, slice_k = sum(sum_data[slice_data==slice_name_k])
+    #
+    '''
+    pi_lbls, pi_vls = get_pie_slices(sum_data=sum_data, slice_data=slice_data, slice_names=slice_names).T
+    pi_lbls = pi_lbls.astype(str)
+    pi_vls = numpy.array(pi_vls).astype(float)
+    #
+    if not n_decimals is None:
+        #pi_lbls = numpy.array([f'{lbl}: {vl:.{n_decimals}f}' for lbl, vl in zip(pi_lbls, pi_vls)])
+                pi_lbls = numpy.array([f'{lbl}: {vl:.{n_decimals}f}' for lbl, vl in zip(pi_lbls, pi_vls)])
+    if ax is None:
+        fg = plt.figuer(figsize=(10,8))
+        ax = fg.add_subplot(1,1,1)
+    #
+    pie_data = ax.pie(pi_vls, labels=pi_lbls, wedgeprops=wedgeprops)
+    #
+    return pie_data
 
