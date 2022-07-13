@@ -182,6 +182,8 @@ class SACCT_data_handler(object):
     #   more likely a varriation on load_sacct_data() that executes the sacct querries, instead of loading a file.
     dtm_handler_default = str2date_num
     #
+    # 'MaxRSS','AveRSS','AveVMSize','MaxVMSize','MaxDiskWrite','MaxDiskRead','AveDiskWrite','AveDiskRead'
+    #
     #default_types_dict = default_SLURM_types_dict
     # yoder: adding vmsize, rss, and IO
     default_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
@@ -189,10 +191,10 @@ class SACCT_data_handler(object):
                 'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
                         'Eligible':dtm_handler_default,
                     'Elapsed':elapsed_time_2_day, 'MaxRSS':kmg_to_num, 'AveRSS':kmg_to_num,
-                    'maxvmsize':kmg_to_num,'avevmsize':kmg_to_num,  'NNodes':int, 'NCPUS':int,
+                    'MaxVMSize':kmg_to_num,'AveVMSize':kmg_to_num,  'NNodes':int, 'NCPUS':int,
                      'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day,
-                    'NTasks':int,'maxdiskwrite':kmg_to_num, 'avediskwrite':kmg_to_num,
-                        'maxdiskread':kmg_to_num, 'avediskread':kmg_to_num
+                    'NTasks':int,'MaxDiskWrite':kmg_to_num, 'AveDiskWrite':kmg_to_num,
+                        'MaxDiskRead':kmg_to_num, 'AveDiskRead':kmg_to_num
                     }
     #
     time_units_labels={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes','minute':'minutes', 'minutes':'minutes', 'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
@@ -217,7 +219,7 @@ class SACCT_data_handler(object):
         #  for each sub-class. Then we can either similarly offload the calc_summaries() type work to a separate
         #  function or leave them in __init__() where they probably belong.
         #
-        n_cpu = n_cpu or 1
+        n_cpu = int(n_cpu or 1)
         #
         if types_dict is None:
             #
@@ -256,8 +258,12 @@ class SACCT_data_handler(object):
         # what does this do? I think we can get rid of it...
         #dt_mod_epoch = self.compute_mpd_epoch
         #
-        print(f'*** DEBUG:: epoch: {dt_epoch}')
         self.dt_mpd_epoch = self.compute_mpd_epoch_dt()
+    #
+    def __getitem__(self, *args, **kwargs):
+        return self.jobs_summary.__getitem__(*args, **kwargs)
+    def __setitem__(self, *args, **kwargs):
+        return self.jobs_summary.__setitem__(*args, **kwargs)
     #
     def get_NGPUs(self, jobs_summary=None):
         jobs_summary = jobs_summary or self.jobs_summary
@@ -1252,12 +1258,6 @@ class SACCT_data_direct(SACCT_data_handler):
         n_cpu = n_cpu or self.n_cpu
         n_cpu = n_cpu or 4
         #
-        # might want to force n_cpu>1...
-        #n_cpu = numpy.min(n_cpu,2)
-        #
-        #, raw_data_out_file=None
-        #raw_data_out_file = raw_data_out or self.raw_data_out_file
-        #
         verbose = verbose or self.verbose
         verbose = verbose or False
         #
@@ -1389,16 +1389,6 @@ class SACCT_data_direct(SACCT_data_handler):
         RH = {h:k for k,h in enumerate(headers)}
         #
         data = [self.process_row(rw.replace('\"', ''), headers=headers, RH=RH) for k,rw in enumerate(sacct_output[1:]) if (max_rows is None or k<max_rows) and len(rw)>1 ]
-        #
-        # NOTE: added this (Very inefficient) step because I though it was failing to sort on the sort fields. It was really failing to sort on an empty set, so I think
-        # NOTE: But... it might make sense to sort here and eliminate duplicates. breaking a big query into lots of subquerries
-        # will likely produce lots of dupes.
-        #   we can skip this.
-        # exclude any rows with no submit date or jobid. I hate to nest this sort of logic here, but we seem to get these from time to time. I don't see how they can be valid.
-        #  that said... I think this was supposed to fix something that is not actually happening, so we can probably omit this step.
-        #data = [rw for rw in data if not (rw[RH['JobID']] is None or rw[RH['JobID']]=='' or rw[RH['Submit']] is None or rw[RH['Submit']])=='' ]
-        #
-        # pandas.DataFrame(data, columns=active_headers).to_records()
         #
         # this is a bit of a hack, but it should help with MPP.
         #
@@ -2595,14 +2585,26 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
 #        jobs_summary[k]['NNodes'] = numpy.nanmax(sub_data['NNodes']).astype(int)
 #        jobs_summary[k]['NTasks'] = numpy.nanmax(sub_data['NTasks']).astype(int)
         #
+        # 5 july 2022, yoder: adding MaxRSS,AveRSS,AveVMsize,MaxVMsize,MaxDiskWrite,MaxDiskRead,AveDiskWrite,AveDiskRead
+        #  to nanmax()
         # This is the proper syntax (not forgiving) to assign a row:
         # again, was there a reason to NOT use nanmax()? Might be better to make our own nanmax(), like:
         # x = numpy.max(X[numpy.isnan(X).invert()])
-        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks']][k] = numpy.nanmax(sub_data['End']),\
+        #jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks']][k] = numpy.nanmax(sub_data['End']),
+        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks','MaxRSS','AveRSS','AveVMSize','MaxVMSize','MaxDiskWrite','MaxDiskRead','AveDiskWrite','AveDiskRead']][k] = numpy.nanmax(sub_data['End']),\
             numpy.nanmin(sub_data['Start']),\
             numpy.nanmax(sub_data['NCPUS']).astype(int),\
             numpy.nanmax(sub_data['NNodes']).astype(int),\
-            numpy.nanmax(sub_data['NTasks']).astype(int)
+            numpy.nanmax(sub_data['NTasks']).astype(int),\
+            numpy.nanmax(sub_data['MaxRSS']),\
+            numpy.nanmax(sub_data['AveRSS']),\
+            numpy.nanmax(sub_data['AveVMSize']),\
+            numpy.nanmax(sub_data['MaxVMSize']),\
+            numpy.nanmax(sub_data['MaxDiskWrite']),\
+            numpy.nanmax(sub_data['MaxDiskRead']),\
+            numpy.nanmax(sub_data['AveDiskWrite']),\
+            numpy.nanmax(sub_data['AveDiskRead'])
+            
             
         #
         # move this into the loop. weird things can happen with buffers...
@@ -3064,4 +3066,64 @@ def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, wedgeprops=No
     pie_data = ax.pie(pi_vls, labels=pi_lbls, wedgeprops=wedgeprops)
     #
     return pie_data
-
+#
+def input_date_to_num(x):
+    '''
+    # multi-purpose input-date handler. Assume input is either a number (handle epoch problem?), properly formatted datestring,
+    #  dtm.date, dtm.datetime, numpy.datetime64
+    '''
+    if isinstance(x, (dtm.date, dtm.datetime)):
+        # NOTE: depending on reference epoch (for which the matplotlib.dates default has recently changed...),
+        #  this may not be equivalent to dtm.date(time).toordinal()
+        #x = dtm.datetime(x.year, x.month, x.day)
+        return mpd.date2num(x)
+    #
+    if isinstance(x, (int, float)):
+        # dt_mpd_epoch
+        if mpd.num2date(x).year > 3000:
+            return x - dt_mpd_epoch
+        elif mpd.num2date(x).year < 1000:
+            return x + dt_mpd_epoch
+        else:
+            return x
+        #
+    if isinstance(x, str):
+        return mpd.datestr2num(x)
+    #
+    if isinstance(x, numpy.datetime64):
+        return x.astype(float)
+    #
+#
+def date_range_to_timeseries(t_start=0, t_end=None, x_val=None, t0=0., dt=.1):
+    '''
+    # convert a date range + X (two values) to a timeseries of X, eg:
+    # {t_start=100.23, t_end=252.10, x_val=42}
+    # @t_start, @t_end: start/end of input interval.
+    # @x_val: data of interest. should be an int or float (one value)
+    # @t0: start time of the sequence; phase shift of the sequence.
+    # @dt: time step size.
+    # OPTIONS: return as XY sequence? return as {data:[], t0:f, k0:i} (ie, data, start time, and time seq. index)?
+    #   returning a full XY sequence is more versatile and might mitigate mistakes downstream...
+    '''
+    #
+    t_start = input_date_to_num(t_start)
+    t_end   = input_date_to_num(t_end)
+    #
+    # get sequence end-points:
+    # Note, these are the len(T) = len(X)+1 endpoints (includes the begining of the first bin).
+    #print('** DEBUG: ', t_start, t_end, t0)
+    ts_0   = dt*numpy.floor( (t_start - t0) /dt) + t0
+    ts_end = dt*numpy.ceil( (t_end - t0) / dt) + t0
+    #
+    print(f'** DEBUG: {N}')
+    ts = numpy.arange(ts_0-t0+dt, ts_end-t0+dt, dt)
+    xs = numpy.ones( len(ts) )
+    xs[0]  *= (ts_0 + dt - t_start)/dt
+    xs[-1] *= ( t_end - ts_end + dt)/dt
+    #
+    #return xs*X
+    #
+    # return numpy.array([ts, xs*X]).T
+    return numpy.array([ts, xs]).T
+    
+    
