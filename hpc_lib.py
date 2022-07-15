@@ -728,32 +728,33 @@ class SACCT_data_handler(object):
         return {'cpu_hours': output_cpuh, 'jobs':output_jobs, 'elapsed':output_elapsed}
             
     #
-    def get_cpu_hours_layer_cake_depricated(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
-                              t_min=None, t_max=None, verbose=0):
-        # TODO: This version of get_cpu_hours_layer_cake() is deprecated. Phase it out.
-        # wrap cpu_hors layer cake into one function. Could further abstract this to layer-cake anything,
-        # but the added complexity in defining the timeseries-function then does not really help (i don't think)
-        # TODO: reformat the output to return more easily plotted recarrays (or similar).
-        # return {layer: {time:[], cpuh:[], 
-        #
-        jobs_summary = jobs_summary or self.jobs_summary
-        #
-        if layers is None:
-            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
-        layers = {ky:{} for ky in layers}
-        if verbose:
-            print('*** ', layers)
-        #
-        for ky in layers.keys():
-            if verbose:
-                print(f'*** ky: {ky} // {ky.encode()}')
-            #
-            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
-            layers[ky]['cpu_hours'] = self.get_cpu_hours(bin_size=bin_size, n_points=n_points, t_min=t_min, t_max=t_max,
-                                                jobs_summary=jobs_summary[ix])
-            layers[ky]['elapsed'] = numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
-        #
-        return layers
+#    def get_cpu_hours_layer_cake_depricated(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
+#                              t_min=None, t_max=None, verbose=0):
+#        # DOING: PHASING OUT! References to this should only exist in a couple of notebooks.
+#        # TODO: This version of get_cpu_hours_layer_cake() is deprecated. Phase it out.
+#        # wrap cpu_hors layer cake into one function. Could further abstract this to layer-cake anything,
+#        # but the added complexity in defining the timeseries-function then does not really help (i don't think)
+#        # TODO: reformat the output to return more easily plotted recarrays (or similar).
+#        # return {layer: {time:[], cpuh:[],
+#        #
+#        jobs_summary = jobs_summary or self.jobs_summary
+#        #
+#        if layers is None:
+#            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
+#        layers = {ky:{} for ky in layers}
+#        if verbose:
+#            print('*** ', layers)
+#        #
+#        for ky in layers.keys():
+#            if verbose:
+#                print(f'*** ky: {ky} // {ky.encode()}')
+#            #
+#            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
+#            layers[ky]['cpu_hours'] = self.get_cpu_hours(bin_size=bin_size, n_points=n_points, t_min=t_min, t_max=t_max,
+#                                                jobs_summary=jobs_summary[ix])
+#            layers[ky]['elapsed'] = numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
+#        #
+#        return layers
     #
     def export_primary_data(self, output_path='data/SACCT_full_data.csv', delim='\t'):
         # DEPRICATION: This does not appear to work very well, and we have HDF5 options, so consider this depricated
@@ -926,6 +927,47 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
+    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, fg=None):
+        #if
+        # , ax1=None, ax2=None, ax3=None, ax4=None
+        # fg.get_axes()
+        bin_size = bin_size or .1
+        if fg is None:
+            fg = plt.figure(figsize=(20,16))
+#            ax1 = fg.add_subplot(2,2,1)
+#            ax2 = fg.add_subplot(2,2,2)
+#            ax3 = fg.add_subplot(2,2,3)
+#            ax4 = fg.add_subplot(2,2,4)
+            for k in range(1,5):
+                fg.add_subplot(2,2,k)
+            #
+        ax1, ax2, ax3, ax4 = fg.get_axes()
+        #
+        ax1.grid()
+        ax2.grid()
+        #
+        ax1.set_title('CPU Hours (per day)', size=16)
+        ax2.set_title('Jobs (per day?)', size=16)
+        ax3.set_title('CPU Hours', size=16)
+        ax4.set_title('Jobs', size=16)
+        #
+        if cpuh_jobs is None:
+            cpuh_jobs = self.get_cpu_hours_layer_cake(bin_size=bin_size, layer_field=group_by)
+        #
+        cpuh = cpuh_jobs['cpu_hours']
+        jobs = cpuh_jobs['jobs']
+        #T = cpuh['time']
+        #
+        z_cpuh = plot_layer_cake(data=cpuh, layers=cpuh.dtype.names[1:], time_col='time', ax=ax1)
+        z_jobs = plot_layer_cake(data=jobs, layers=cpuh.dtype.names[1:], time_col='time', ax=ax2)
+        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3)
+        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4)
+        #
+        ax1.legend(loc=0)
+        ax2.legend(loc=0)
+        #
+        return fg
+
     def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10),
      cpu_usage=None, verbose=0, foutname=None, periodic_projection='rectilinear'):
         '''
