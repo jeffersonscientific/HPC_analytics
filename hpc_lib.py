@@ -555,15 +555,6 @@ class SACCT_data_handler(object):
         if verbose is None:
             verbose = self.verbose
         #
-#        if t_min is None and 'start_date' in self.__dict__.keys():
-#            t_min = self.start_date
-#            #
-#        #
-#        if t_max is None and 'end_date' in self.__dict__.keys():
-#            t_max = self.end_date
-#            #
-#        #
-        #
         mpp_chunksize = mpp_chunksize or self.chunk_size
         n_cpu = n_cpu or self.n_cpu
         #
@@ -654,11 +645,22 @@ class SACCT_data_handler(object):
         ix = self.jobs_summary['NCPUS']==n_cpu
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
     #
-    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=None, mpp_chunksize=10000, nan_to=0., NCPUs=None):
+    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None):
         # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
         jobs_summary = jobs_summary or self.jobs_summary
         if NCPUs is None or NCPUs=='':
             NCPUs = jobs_summary['NCPUS']
+        #
+        if t_now is None:
+            t_now = mpd.date2num(dtm.datetime.now() )
+        if t_min is None:
+            t_min = numpy.nanmin([jobs_summary['Start'], jobs_summary['End']])
+            #t_min = numpy.nanmin( [t_now, t_min] )
+        #
+        if t_max is None:
+            t_max = numpy.nanmax([jobs_summary['Start'], jobs_summary['End']])
+            print(f'*** DEBUG t_now: {t_now}, t_max: {t_max}')
+            t_max = numpy.nanmin([t_now, t_max])
         #
         if layers is None:
             layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
@@ -669,15 +671,21 @@ class SACCT_data_handler(object):
         dtype_cpuh = [(s, '>f8') for s in ['time'] + list(layers.keys())]
         dtype_jobs = dtype_cpuh
         #
-        # NOTE: Do we want to return both of these, or only one of them? Maybe an otion?
-        output_cpus = numpy.empty( (n_points, ), dtype=dtype_cpuh )
-        output_jobs = numpy.empty( (n_points, ), dtype=dtype_jobs )
-        #
         for j, ky in enumerate(layers.keys()):
+            # TODO: better to handle b'' vs '' via ix.astype(str), or similar approach.
             ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
             XX = self.active_jobs_cpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu,
                                      jobs_summary=jobs_summary[ix], verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to,
                                      NCPUs=NCPUs[ix])
+            #
+            if verbose:
+                print('*** DEBUG: {}:: {}'.format(j, len(XX['N_cpu'])))
+                #print(f'*** DEBUG: {k}:: {len(XX['N_cpu'])}')
+            #
+            # create output_ arrays for j==0 (or equivalently output_cpus and output_jobs do not exist...)
+            if j==0:
+                output_cpus = numpy.empty( (len(XX['N_cpu']), ), dtype=dtype_cpuh )
+                output_jobs = numpy.empty( (len(XX['N_jobs']), ), dtype=dtype_jobs )
             #
             output_cpus[ky] = XX['N_cpu'][:]
             output_jobs[ky] = XX['N_jobs'][:]
@@ -689,13 +697,25 @@ class SACCT_data_handler(object):
         
     #
     def get_cpu_hours_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
-                              t_min=None, t_max=None, verbose=0):
+                              t_min=None, t_max=None, t_now=None, verbose=0):
         '''
         # revised version of gchlc with a more intuitive output.
         #
         '''
         #
         jobs_summary = jobs_summary or self.jobs_summary
+        #
+        # t_min, t_max: These constraints need to be handled up-front, from the whole data set. Subsets will likely return
+        #   different t_min/t_max.
+        if t_now is None:
+            t_now = mpd.date2num(dtm.datetime.now())
+        if t_min is None:
+            t_min = numpy.nanmin([jobs_summary['Start'], jobs_summary['End']])
+            #t_min = numpy.nanmin([t_min, t_now])
+        #
+        if t_max is None:
+            t_max = numpy.nanmax([jobs_summary['Start'], jobs_summary['End']])
+            t_min = numpy.nanmax([t_max, t_now])
         #
         if layers is None:
             layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
@@ -727,33 +747,9 @@ class SACCT_data_handler(object):
         #
         return {'cpu_hours': output_cpuh, 'jobs':output_jobs, 'elapsed':output_elapsed}
             
-    #
-    def get_cpu_hours_layer_cake_depricated(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
-                              t_min=None, t_max=None, verbose=0):
-        # TODO: This version of get_cpu_hours_layer_cake() is deprecated. Phase it out.
-        # wrap cpu_hors layer cake into one function. Could further abstract this to layer-cake anything,
-        # but the added complexity in defining the timeseries-function then does not really help (i don't think)
-        # TODO: reformat the output to return more easily plotted recarrays (or similar).
-        # return {layer: {time:[], cpuh:[], 
-        #
-        jobs_summary = jobs_summary or self.jobs_summary
-        #
-        if layers is None:
-            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
-        layers = {ky:{} for ky in layers}
-        if verbose:
-            print('*** ', layers)
-        #
-        for ky in layers.keys():
-            if verbose:
-                print(f'*** ky: {ky} // {ky.encode()}')
-            #
-            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
-            layers[ky]['cpu_hours'] = self.get_cpu_hours(bin_size=bin_size, n_points=n_points, t_min=t_min, t_max=t_max,
-                                                jobs_summary=jobs_summary[ix])
-            layers[ky]['elapsed'] = numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
-        #
-        return layers
+    # REMOVED:
+    #def get_cpu_hours_layer_cake_depricated(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
+#                              t_min=None, t_max=None, verbose=0):
     #
     def export_primary_data(self, output_path='data/SACCT_full_data.csv', delim='\t'):
         # DEPRICATION: This does not appear to work very well, and we have HDF5 options, so consider this depricated
@@ -926,10 +922,138 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
+    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, ave_len_days=5., qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+        '''
+        #  Inputs:
+        #   @group_by: column name for grouping
+        #   @acpu_jobs: optional input of cpuh_jobs
+        #   @bin_size: bins size of timeseries.
+        #   @fg: (optional) figure for plots. Should have 4 subplots. if not provided a default will be created.
+        #   @ax1,2,3,4: Optional. if not provided will be created and/or drawn from fg.
+        #   @ave_len_days: smoothing/averaging interval, in days.
+        #   #qs: list/array-like of quantile thresholds.
+        '''
+        qs = numpy.array(qs)
+        #bin_size = bin_size or .1
+        if fg is None:
+            fg = plt.figure(figsize=(20,16))
+            for k in range(1,5):
+                fg.add_subplot(2,2,k)
+        #
+        # NOTE: this might break if (fg is None), even if ax1,2,3,4 are provided)
+        #ax1, ax2, ax3, ax4 = fg.get_axes()
+        ax1 = ax1 or fg.get_axes()[0]
+        ax2 = ax2 or fg.get_axes()[1]
+        ax3 = ax3 or fg.get_axes()[2]
+        ax4 = ax4 or fg.get_axes()[3]
+        #
+        ax1.grid()
+        ax2.grid()
+        ax3.grid()
+        ax4.grid()
+        #
+        ax1.set_title('Active CPUs', size=16)
+        ax2.set_title('Active Jobs', size=16)
+        ax3.set_title('Active CPUs, CDF', size=16)
+        ax4.set_title('Active Jobs  CDF', size=16)
+        #
+        if acpu_layer_cake is None:
+            acpu_layer_cake = self.get_active_cpus_layer_cake(layer_field=group_by, n_points=n_points, bin_size=bin_size)
+        #
+        #cpus = acpu_layer_cake['N_cpu']
+        #jobs = acpu_layer_cake['N_jobs']
+        T = acpu_layer_cake['N_cpu']['time']
+        #
+        lc_ncpu = plot_layer_cake(data=acpu_layer_cake['N_cpu'], ax=ax1)
+        lc_njobs = plot_layer_cake(data=acpu_layer_cake['N_jobs'], ax=ax2)
+        #
+        # get an averaging length (number of TS elements) of about ave_len_days
+        ave_len = int(numpy.ceil(ave_len_days*len(T)/(T[-1] - T[0])))
+        z_cpu = ax1.get_lines()[-1].get_ydata()
+        z_jobs = ax2.get_lines()[-1].get_ydata()
+        z_cpus_smooth = running_mean(z_cpu, ave_len)
+        z_jobs_smooth = running_mean(z_jobs, ave_len)
+        #
+        ax1.plot(T[-len(z_cpus_smooth):], z_cpus_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
+        ax2.plot(T[-len(z_jobs_smooth):], z_jobs_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
+        #
+        qs_cpus = numpy.quantile(z_cpu, qs)
+        qs_jobs = numpy.quantile(z_jobs, qs)
+        #
+        hh_cpus = ax3.hist(z_cpu, bins=100, cumulative=True, density=True, histtype='step', lw=3.)
+        for x,y in zip(qs_cpus, qs):
+            #ax3.plot([0., qs_cpus[-1], qs_cpus[-1]], [qs[-1], qs[-1], 0.], ls='--', color='r', lw=2. )
+            ax3.plot([0., x, x], [y, y, 0.], ls='--', lw=2., label=f'{y*100.}th %: {x:.0f} cpus' )
+        #
+        hh_jobs = ax4.hist(z_jobs, bins=100, cumulative=True, density=True, histtype='step', lw=3.)
+        for x,y in zip(qs_jobs, qs):
+            #ax3.plot([0., qs_cpus[-1], qs_cpus[-1]], [qs[-1], qs[-1], 0.], ls='--', color='r', lw=2. )
+            ax4.plot([0., x, x], [y, y, 0.], ls='--', lw=3., label=f'{y*100.}th %: {x:.0f} jobs' )
+        #
+        for ax in (ax1, ax2, ax3, ax4):
+            ax.legend(loc=0)
+        #
+        return fg
+        
+    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+        '''
+        # 2 x 2 block of figures showing CPU hours and active jobs, layer-cake by group_by and pie charts of same quantities.
+        #  note that CPU hours are constructed timeseries (Either by creating a TS from each time interval and then mapping that to a
+        #  master timeseries, or by looping over said master timeseries and computing how many bins fall inside the jobs_summary interval
+        #  (which sounds like sort of a stupid way to compute that, but it does have some merits...).
+        #  Inputs:
+        #   @group_by: column name for grouping
+        #   @cpuh_jobs: optional input of cpuh_jobs
+        #   @bin_size: bins size of timeseries.
+        #   @fg: (optional) figure for plots. Should have 4 subplots. if not provided a default will be created.
+        #   @ax1,2,3,4: Optional. if not provided will be created and/or drawn from fg.
+        '''
+        #
+        bin_size = bin_size or .1
+        if fg is None:
+            fg = plt.figure(figsize=(20,16))
+            for k in range(1,5):
+                fg.add_subplot(2,2,k)
+            #
+        #
+        # NOTE: this might break if (fg is None), even if ax1,2,3,4 are provided)
+        #ax1, ax2, ax3, ax4 = fg.get_axes()
+        ax1 = ax1 or fg.get_axes()[0]
+        ax2 = ax2 or fg.get_axes()[1]
+        ax3 = ax3 or fg.get_axes()[2]
+        ax4 = ax4 or fg.get_axes()[3]
+        #
+        ax1.grid()
+        ax2.grid()
+        #
+        ax1.set_title('CPU Hours (per day)', size=16)
+        ax2.set_title('Jobs (per day?)', size=16)
+        ax3.set_title('CPU Hours', size=16)
+        ax4.set_title('Jobs', size=16)
+        #
+        if cpuh_jobs is None:
+            cpuh_jobs = self.get_cpu_hours_layer_cake(bin_size=bin_size, layer_field=group_by)
+        #
+        cpuh = cpuh_jobs['cpu_hours']
+        jobs = cpuh_jobs['jobs']
+        #T = cpuh['time']
+        #
+        z_cpuh = plot_layer_cake(data=cpuh, layers=cpuh.dtype.names[1:], time_col='time', ax=ax1)
+        z_jobs = plot_layer_cake(data=jobs, layers=cpuh.dtype.names[1:], time_col='time', ax=ax2)
+        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3)
+        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4)
+        #
+        ax1.legend(loc=0)
+        ax2.legend(loc=0)
+        #
+        return fg
+
     def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10),
      cpu_usage=None, verbose=0, foutname=None, periodic_projection='rectilinear'):
         '''
-        # 2x3 figure of instantaneous usage (active cpus, jobs per day, week)
+        # 2x3 figure of instantaneous usage (active cpus, jobs per day, week,
+        #  periodic/seasonal usage -- day of week, hour of day aggregates)
+        #
         '''
         if cpu_usage is None:
             cpu_usage = self.cpu_usage
@@ -2836,7 +2960,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     if verbose:
         print('** DEBUG: shapes:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
     #
-    if len(t_start)==1:
+    if len(t_start)==1 and verbose:
         print('** ** **: t_start, t_end: ', t_start, t_end)
     #
     # catch an empty set:
@@ -2850,7 +2974,8 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     #
     if not (bin_size is None or t_min is None or t_max is None):
         n_points = int(numpy.ceil(t_max-t_min)/bin_size)
-    print(f'*** DEBUG: {n_points}, {bin_size}')
+    if verbose:
+        print(f'*** DEBUG: {n_points}, {bin_size}')
     output = numpy.zeros( n_points, dtype=[('time', '>f8'),
                 ('N_jobs', '>f8'),
                 ('N_cpu', '>f8')])
