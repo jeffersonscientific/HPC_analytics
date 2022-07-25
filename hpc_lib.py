@@ -2721,7 +2721,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
             print('*** no ks: {}, {}'.format(j_id, ks))
         #
         # assign place-holder values to jobs_summary (we can probably skip this step)
-        jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0]
+        jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0] if we need a speed boost.
         #
         # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
         #  use their index position, rather than min()/max()... but we'd need to be more careful about
@@ -2758,7 +2758,8 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
             numpy.nanmax(sub_data['AveDiskWrite']),\
             numpy.nanmax(sub_data['AveDiskRead'])
             
-            
+        # GPUS: something like,
+        #   numpy.nanmax([get_NGPUSs(s) for s in sub_data['alloc_tres']])
         #
         # move this into the loop. weird things can happen with buffers...
         del sub_data
@@ -2767,6 +2768,13 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
     #
     return jobs_summary
+#
+def get_NGPUS(alloc_tres=None):
+        #
+        #return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
+        # for s in jobs_summary['AllocTRES'].astype(str)])
+        # TODO: get gpu types...
+        return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0. for s in alloc_tres])
 #
 def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=10000, d_t=None):
     '''
