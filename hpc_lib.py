@@ -276,8 +276,10 @@ class SACCT_data_handler(object):
         #
         #return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
         # for s in jobs_summary['AllocTRES'].astype(str)])
-        return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
-         for s in alloc_tres])
+        #
+        # NOTE: if this blows up, it might be because I made a couple minor type-handling changes on 25 July 2022 (yoder):
+        return numpy.array([int(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0
+         for s in alloc_tres]).astype(int)
     #
     def compute_mpd_epoch_dt(self, test_col='Start', test_index=0, yr_upper=3000, yr_lower=1000):
         #
@@ -2705,7 +2707,15 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #                                            for s in data['JobID'][ix_user_jobs] ])}
     job_ID_index = {ss:[] for ss in numpy.unique( data['JobID_parent'] )}
     #
-    jobs_summary = numpy.zeros( shape=(len(job_ID_index), ), dtype=data.dtype)
+    # there's got to be a beter way to do this, but for now...
+    # dtypes can be like, [('index', '<i8'), ('User', ('|S8', {'h5py_encoding': 'ascii'})), ... ]
+    # not sure quite what the 'right' way to handle them is. we can do something like this:
+    dtype = [(n, t[0] if isinstance(t,tuple) else t) for n,t in jobs_summary.dtype.descr ]
+    dtype += [('NGPUS', '<i8')]
+    dtype = data.dtype
+    #
+    #jobs_summary = numpy.zeros( shape=(len(job_ID_index), ), dtype=data.dtype)
+    jobs_summary = numpy.zeros( shape=(len(job_ID_index), ), dtype=dtype)
     #
     # build an index of unique ids : {jobid_parent:[k1, k2, k3...],}
     for k,s in enumerate(data['JobID_parent']):
@@ -2744,7 +2754,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         # again, was there a reason to NOT use nanmax()? Might be better to make our own nanmax(), like:
         # x = numpy.max(X[numpy.isnan(X).invert()])
         #jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks']][k] = numpy.nanmax(sub_data['End']),
-        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks','MaxRSS','AveRSS','AveVMSize','MaxVMSize','MaxDiskWrite','MaxDiskRead','AveDiskWrite','AveDiskRead']][k] = numpy.nanmax(sub_data['End']),\
+        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks','MaxRSS','AveRSS','AveVMSize','MaxVMSize','MaxDiskWrite','MaxDiskRead','AveDiskWrite','AveDiskRead','NGPUS']][k] = numpy.nanmax(sub_data['End']),\
             numpy.nanmin(sub_data['Start']),\
             numpy.nanmax(sub_data['NCPUS']).astype(int),\
             numpy.nanmax(sub_data['NNodes']).astype(int),\
@@ -2756,10 +2766,12 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
             numpy.nanmax(sub_data['MaxDiskWrite']),\
             numpy.nanmax(sub_data['MaxDiskRead']),\
             numpy.nanmax(sub_data['AveDiskWrite']),\
-            numpy.nanmax(sub_data['AveDiskRead'])
+            numpy.nanmax(sub_data['AveDiskRead'],\
+            numpy.nanmax(numpy.array([get_NGPUs(s) for s in sub_data['alloc_tres']]).astype(int))
+            )
             
         # GPUS: something like,
-        #   numpy.nanmax([get_NGPUSs(s) for s in sub_data['alloc_tres']])
+        #   numpy.nanmax([get_NGPUs(s) for s in sub_data['alloc_tres']])
         #
         # move this into the loop. weird things can happen with buffers...
         del sub_data
