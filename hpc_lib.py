@@ -265,11 +265,19 @@ class SACCT_data_handler(object):
     def __setitem__(self, *args, **kwargs):
         return self.jobs_summary.__setitem__(*args, **kwargs)
     #
-    def get_NGPUs(self, jobs_summary=None):
-        jobs_summary = jobs_summary or self.jobs_summary
+    def get_NGPUs(self, jobs_summary=None, alloc_tres=None):
+        #jobs_summary = jobs_summary or self.jobs_summary
+        if alloc_tres is None:
+            jobs_summary = jobs_summary or self.jobs_summary
+            alloc_tres = jobs_summary['AllocTRES'].astype(str)
         #
+        else:
+            alloc_tres = numpy.array(alloc_tres).astype(str)
+        #
+        #return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
+        # for s in jobs_summary['AllocTRES'].astype(str)])
         return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
-         for s in jobs_summary['AllocTRES'].astype(str)])
+         for s in alloc_tres])
     #
     def compute_mpd_epoch_dt(self, test_col='Start', test_index=0, yr_upper=3000, yr_lower=1000):
         #
@@ -346,7 +354,7 @@ class SACCT_data_handler(object):
             #self.data = self.data_df.values.to_list()
         #
     #
-    def write_hdf5(self, h5out_file=None, append=False):
+    def write_hdf5(self, h5out_file=None, append=False, meta_data=None):
         h5out_file = h5out_file or self.h5out_file
         if h5out_file is None:
             h5out_file = 'sacct_writehdf5_output.h5'
@@ -361,12 +369,14 @@ class SACCT_data_handler(object):
         if 'data' in self.__dict__.keys():
             array_to_hdf5_dataset(input_array=self.data, dataset_name='data', output_fname=h5out_file, h5_mode='a')
         #
+        # TODO: consider that we really don't need the computed data sets any longer. computing cpu_Usage, etc. is just not that hard to do. not hurting anything
+        #  but not necessary either.
         array_to_hdf5_dataset(input_array=self.jobs_summary, dataset_name='jobs_summary', output_fname=h5out_file, h5_mode='a')
         array_to_hdf5_dataset(input_array=self.cpu_usage, dataset_name='cpu_usage', output_fname=h5out_file, h5_mode='a')
         array_to_hdf5_dataset(input_array=self.weekly_hours, dataset_name='weekly_hours', output_fname=h5out_file, h5_mode='a')
         array_to_hdf5_dataset(input_array=self.daily_hours, dataset_name='daily_hours', output_fname=h5out_file, h5_mode='a')
         #
-#        # TODO: also write metadata:
+#        # TODO: also write metadata/attributes:
 #        # you'd think the best thing to do would be to make a datset for inptus, but then we have to structure
 #          that dataset. I think we can just store variables.
 #        with h5py.File(output_fname, h5_mode) as fout:
@@ -715,7 +725,12 @@ class SACCT_data_handler(object):
         #
         if t_max is None:
             t_max = numpy.nanmax([jobs_summary['Start'], jobs_summary['End']])
-            t_min = numpy.nanmax([t_max, t_now])
+            #
+            # if data set contains unfinished jobs, set t_now to now. this probaby should be revisited... maybe makes more sense
+            #  to use max(t_end) as the default t_now... Another point for this, it's a lot easier to set t_max=now() than
+            #  max(in_data_set). Doing this can truncate active jobs, but will avoid artifacts.
+            #if None in jobs_summary['End']:
+            #    t_max = numpy.nanmax([t_max, t_now])
         #
         if layers is None:
             layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
@@ -2547,8 +2562,10 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #  NOTE: One problem we see is redundancy due to small sub-queries. Specifically, SACCT returns data for 'all jobs in any state'
     #   between the start/end dates. This means that if we break up the query, which we must 1) for performance, 2) SLURM restrictions
     #   on number of rows returned, 3) Sherlock/Kilian restrictions on query bredth. The general mechanism to summarize jobs *should*
-    #   also de-dupe these rows (sort by job_id, then ???; then take max/min values for start, end, etc. times). BUT, this seesm to be
-    #   making mistakes.
+    #   also de-dupe these rows (sort by job_id, then ???; then take max/min values for start, end, etc. times). But keep an eye on it; it could make mistakes.
+    # TODO: add GPUs ? two ways: at the end: 1)do this task as presently defined, then compute GPUs from the whole set and add
+    #   a column., 2) integrate a GPU column. into this workflow. To do it again... might just do this by-column anyway. there
+    #   are performance (and other things too...) rleated strategies in this that -- to do it again, I might not repeat.
     '''
     #
     #
@@ -2803,6 +2820,7 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     #
     if t_max is None:
         t_max = numpy.nanmax([t_start, t_end])
+    #print(f'** DEBUG: t_min: {t_min}, t_max: {t_max}')
     #
     inputs.update({'t_min':t_min, 't_max':t_max})
     #
@@ -3227,6 +3245,9 @@ def date_range_to_timeseries(t_start=0, t_end=None, x_val=None, t0=0., dt=.1):
     # @x_val: data of interest. should be an int or float (one value)
     # @t0: start time of the sequence; phase shift of the sequence.
     # @dt: time step size.
+    # Then, you can update a target sequence by using numpy.searchsorted() to find the insert/update point for
+    #  the generated sequence. ie, k = numpy.searchsorted(t_master, xy[0][0]), then x_master[k-1:len(xy)] (or something
+    #  very similar) should update the correct subsequence.
     # OPTIONS: return as XY sequence? return as {data:[], t0:f, k0:i} (ie, data, start time, and time seq. index)?
     #   returning a full XY sequence is more versatile and might mitigate mistakes downstream...
     '''
