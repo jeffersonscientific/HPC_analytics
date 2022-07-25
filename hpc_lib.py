@@ -379,10 +379,14 @@ class SACCT_data_handler(object):
 #        # TODO: also write metadata/attributes:
 #        # you'd think the best thing to do would be to make a datset for inptus, but then we have to structure
 #          that dataset. I think we can just store variables.
-#        with h5py.File(output_fname, h5_mode) as fout:
-#            if not meta_data in fout.keys():
-#                fout.create_dataset(dataset_name, input_array.shape,
-#                            dtype=new_dtype)
+        with h5py.File(output_fname, 'a') as fout:
+            #for ky in ('start_date', 'end_date'):
+            #    fout.attrs.create(ky, simple_date_string(self.__dict__[ky]))
+            #
+            for ky, f in [('partition', str), ('group',str), ('start_date', simple_date_string), ('end_date', simple_date_string)]:
+                #fout.attrs.create(ky, f(self.__dict__.get(ky,None)))
+                if ky in self.__dict__.keys():
+                    fout.attrs.create(ky, f(self.__dict__[ky]))
         
         return None
     #
@@ -1580,6 +1584,14 @@ class SACCT_data_from_h5(SACCT_data_handler):
                         self.__dict__[ky][cl] = ([s.decode() for s in ary[cl]] if (isinstance(tp,tuple) and tp[0].startswith('|S') ) else ary[cl][:])
                 #
                 self.__dict__[ky]=ary[:]
+            #
+            # and attributes...:
+            for ky,vl in fin.attrs.items():
+                #TODO: do this elegandly (eg, with a [(ky,f), ...] pair list. For now...
+                if ky in ('start_date', 'end_date') and isinstance(vl, str):
+                    vl = mpd.num2date(mpd.datestr2num(vl))
+                self.__dict__[ky] = vl
+            #
             del ky,ary
         self.dt_mpd_epoch = self.compute_mpd_epoch_dt()
         #
