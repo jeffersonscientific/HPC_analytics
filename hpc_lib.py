@@ -276,8 +276,10 @@ class SACCT_data_handler(object):
         #
         #return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
         # for s in jobs_summary['AllocTRES'].astype(str)])
-        return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
-         for s in alloc_tres])
+        #
+        # NOTE: if this blows up, it might be because I made a couple minor type-handling changes on 25 July 2022 (yoder):
+        return numpy.array([int(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0
+         for s in alloc_tres]).astype(int)
     #
     def compute_mpd_epoch_dt(self, test_col='Start', test_index=0, yr_upper=3000, yr_lower=1000):
         #
@@ -379,7 +381,7 @@ class SACCT_data_handler(object):
 #        # TODO: also write metadata/attributes:
 #        # you'd think the best thing to do would be to make a datset for inptus, but then we have to structure
 #          that dataset. I think we can just store variables.
-        with h5py.File(output_fname, 'a') as fout:
+        with h5py.File(h5out_file, 'a') as fout:
             #for ky in ('start_date', 'end_date'):
             #    fout.attrs.create(ky, simple_date_string(self.__dict__[ky]))
             #
@@ -2590,8 +2592,26 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
 #        # or:
 #        #dtype_dict = {ky:val for ky,vl in data.dtype}
     #
+    # array of input_col, output_col, function to handle updates to jobs_summary array.
+#   # js_col_f = [({output_col_name}, {input_col_name}, function), ... ]
+    js_col_f = [('End',       'End', numpy.nanmax),\
+                ('Start',     'Start', numpy.nanmax),\
+                ('NCPUS',     'NCPUS', lambda x: numpy.nanmax(x).astype(int)),\
+                ('NNodes',    'NNodes', lambda x: numpy.nanmax(x).astype(int)),\
+                ('NTasks',    'NTasks', lambda x: numpy.nanmax(x).astype(int)),\
+                ('MaxRSS',    'MaxRSS', numpy.nanmax),
+                ('AveRSS',    'AveRSS', numpy.nanmax),
+                ('MaxVMSize', 'MaxVMSize', numpy.nanmax),
+                ('AveVMSize', 'AveVMSize', numpy.nanmax),
+                ('MaxDiskWrite', 'MaxDiskWrite', numpy.nanmax),
+                ('AveDiskWrite', 'AveDiskWrite', numpy.nanmax),
+                ('MaxDiskRead',  'MaxDiskRead', numpy.nanmax),
+                ('AveDiskRead',  'AveDiskRead', numpy.nanmax),
+                ('NGPUs', 'AllocTRES', lambda x: numpy.nanmax(get_NGPUs(x)).astype(int) )
+                ]
+    #
     n_cpu = (n_cpu or 1)
-    #print('*** DEBUG n_cpu: {}'.format(n_cpu))
+    js_dtype = numpy.dtype([(n, t[0] if isinstance(t,tuple) else t) for n,t in data.dtype.descr ] + [('NGPUs', '<i8')] )
     if verbose:
         print('*** computing jobs_summary func on {} cpu'.format(n_cpu))
     #
@@ -2600,34 +2620,25 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         print('*** DEBUG: data[JobID]: {}, data[Submit]: {}'.format( (None in data['JobID']), (None in data['Submit']) ))
         #
         # Getting some "can't sort None type" errors:
-        print('*** DEBUG: type(data), len(data): ', type(data), len(data) )
-        #print('*** DEBUG: nans in JobID?: ', numpy.isnan(data['JobID']).any() )
-        print('*** DEBUG: nans in Submit?: ', numpy.isnan(data['Submit']).any() )
-        print('*** DEGUG: Nones in JobID: ', numpy.sum([s is None for s in data['JobID']]))
+        if verbose:
+            print('*** DEBUG: NoneType evals...')
+            print('*** DEBUG: type(data), len(data): ', type(data), len(data) )
+            #print('*** DEBUG: nans in JobID?: ', numpy.isnan(data['JobID']).any() )
+            print('*** DEBUG: nans in Submit?: ', numpy.isnan(data['Submit']).any() )
+            print('*** DEGUG: Nones in JobID: ', numpy.sum([s is None for s in data['JobID']]))
         #
         # NOTE: sorts by named order=[] fields, then in order as they appear in dtype, to break any ties. When there are LOTS of records,
         #  and more pointedly, when there are dupes resulting from breaking up into sub-querries, all the real fields will tie,
         #  and eventually it will attempt to sort on a Nonetype which will break. The workaround is to add an index column, which is
         #  necessarily unique to a data set
-        #sort_kind='stable'
-        sort_kind='quicksort'
-        #ix_s = numpy.argsort(data, axis=0, order=['JobID', 'Submit', 'index'], kind=sort_kind)
-        #
         #
         #working_data = data[ix_s]
         working_data = data[:]
         working_data['index'] = numpy.arange(len(working_data))
         #
-        # FIXME: This is likely the problem we are seeing when we break up a query. A couple things: we are a little inconsistent
-        #  with use of JobID vs JobID_parent, but this is usually a non-problem since JobID_parent is a derived field
-        #  that just truncates the parent jobID from Arrays like, JobID_parent=JobID.split('.')[0], so
-        #  12345.67 -> 12345.
-        #  The bigger problem is that we get duplicates when we split up a large query into smaller sub-queries, so eventually
-        #  the algorithm tries to sort on a NONEtype field. We can fix this by adding an index. We do appear to be adding
-        #  this 'index' column to the sacct data, so let's use that!
         if verbose:
             print('*** DEBUG: working_data.dtype: {}'.format(working_data.dtype))
-            print('*** DEBUG: len(working_data[index]), len(unique(working_data[index])): {}, {}'.format(len(working_data['index']), len(numpy.unique(working_data['index']))))        #working_data.sort(axis=0, order=['JobID', 'Submit'], kind=sort_kind)
+            print('*** DEBUG: len(working_data[index]), len(unique(working_data[index])): {}, {}'.format(len(working_data['index']), len(numpy.unique(working_data['index']))))
         #
         # keep getting nonetype! seems like sorting on 'index' should pretty much sort it out, but no...
         #   this is possibly best called a "bug." It would seem that sort() sorts along the specified axes and then all the
@@ -2636,11 +2647,9 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         # seems sort of stupid, but this might work.
         #ix_temp = numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])
         working_data = working_data[numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])]
-        #working_data.sort(order=['JobID_parent', 'index'], kind=sort_kind)
         #
         #ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
         ks = numpy.array([*numpy.arange(0, len(data), step_size), len(data)+1])
-        #print('*** *** ks_initial: ', ks)
         #
         # TODO: some sorting...
         # Adjust partitions to keep jobs together.
@@ -2656,8 +2665,9 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
             print('** calc_summary:: ks: {}'.format(ks))
         
         #ix_user_jobs = numpy.array([not ('.batch' in s or '.extern' in s) for s in data['JobID']])
+        # NOTE: Movinng create(jobs_summary) to outside the if ncpus split...
         N = len(numpy.unique(data['JobID_parent']) )
-        jobs_summary = numpy.zeros( (N, ), dtype=data.dtype)
+        jobs_summary = numpy.zeros( (N, ), dtype=js_dtype)
         #
         # ks should be a list of indices between 0 and len+1. This process still needs a little bit of work
         #  to guarantee subsets are not too long/short, etc. but this much should work
@@ -2705,7 +2715,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #                                            for s in data['JobID'][ix_user_jobs] ])}
     job_ID_index = {ss:[] for ss in numpy.unique( data['JobID_parent'] )}
     #
-    jobs_summary = numpy.zeros( shape=(len(job_ID_index), ), dtype=data.dtype)
+    jobs_summary = numpy.zeros( shape=(len(job_ID_index), ), dtype=js_dtype)
     #
     # build an index of unique ids : {jobid_parent:[k1, k2, k3...],}
     for k,s in enumerate(data['JobID_parent']):
@@ -2721,7 +2731,15 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
             print('*** no ks: {}, {}'.format(j_id, ks))
         #
         # assign place-holder values to jobs_summary (we can probably skip this step)
-        jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0] if we need a speed boost.
+        # another syntax challenge...
+        #jobs_summary[k]=data[numpy.min(ks)]  # NOTE: these should be sorted, so we could use ks[0] if we need a speed boost.
+        #
+        # Again, an inflexible syntax challenge. the jobs_summary[] column index should be a list (?). In this case, we know the
+        #  shape of a row from data[], so the first option should work. More generally, the assignment input needs to be a tuple.
+        #this should work...
+        jobs_summary[list(data.dtype.names)][k] = data[numpy.min(ks)]
+        #jobs_summary[list(data.dtype.names)][k] = tuple(data[list(data.dtype.names)][numpy.min(ks)]
+        jobs_summary['NGPUs'][k] = 0.
         #
         # NOTE: for performance, because sub-sequences should be sorted (by index), we should be able to
         #  use their index position, rather than min()/max()... but we'd need to be more careful about
@@ -2740,28 +2758,26 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #
         # 5 july 2022, yoder: adding MaxRSS,AveRSS,AveVMsize,MaxVMsize,MaxDiskWrite,MaxDiskRead,AveDiskWrite,AveDiskRead
         #  to nanmax()
-        # This is the proper syntax (not forgiving) to assign a row:
-        # again, was there a reason to NOT use nanmax()? Might be better to make our own nanmax(), like:
-        # x = numpy.max(X[numpy.isnan(X).invert()])
-        #jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks']][k] = numpy.nanmax(sub_data['End']),
-        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks','MaxRSS','AveRSS','AveVMSize','MaxVMSize','MaxDiskWrite','MaxDiskRead','AveDiskWrite','AveDiskRead']][k] = numpy.nanmax(sub_data['End']),\
-            numpy.nanmin(sub_data['Start']),\
-            numpy.nanmax(sub_data['NCPUS']).astype(int),\
-            numpy.nanmax(sub_data['NNodes']).astype(int),\
-            numpy.nanmax(sub_data['NTasks']).astype(int),\
-            numpy.nanmax(sub_data['MaxRSS']),\
-            numpy.nanmax(sub_data['AveRSS']),\
-            numpy.nanmax(sub_data['AveVMSize']),\
-            numpy.nanmax(sub_data['MaxVMSize']),\
-            numpy.nanmax(sub_data['MaxDiskWrite']),\
-            numpy.nanmax(sub_data['MaxDiskRead']),\
-            numpy.nanmax(sub_data['AveDiskWrite']),\
-            numpy.nanmax(sub_data['AveDiskRead'])
-            
-        # GPUS: something like,
-        #   numpy.nanmax([get_NGPUSs(s) for s in sub_data['alloc_tres']])
+        # NOTE: The better way to assign these is to set up an array of [(col, func), ...], (see above):
+#        jobs_summary[['End', 'Start', 'NCPUS', 'NNodes', 'NTasks','MaxRSS','AveRSS','MaxVMSize','AveVMSize','MaxDiskWrite','AveDiskWrite','MaxDiskRead','AveDiskRead','NGPUs']][k] = numpy.nanmax(sub_data['End']),\
+#            numpy.nanmin(sub_data['Start']),\
+#            numpy.nanmax(sub_data['NCPUS']).astype(int),\
+#            numpy.nanmax(sub_data['NNodes']).astype(int),\
+#            numpy.nanmax(sub_data['NTasks']).astype(int),\
+#            numpy.nanmax(sub_data['MaxRSS']),\
+#            numpy.nanmax(sub_data['AveRSS']),\
+#            numpy.nanmax(sub_data['MaxVMSize']),\
+#            numpy.nanmax(sub_data['AveVMSize']),\
+#            numpy.nanmax(sub_data['MaxDiskWrite']),\
+#            numpy.nanmax(sub_data['AveDiskWrite']),\
+#            numpy.nanmax(sub_data['MaxDiskRead']),\
+#            numpy.nanmax(sub_data['AveDiskRead'],\
+#            numpy.nanmax(numpy.array([get_NGPUs(s) for s in sub_data['AllocTRES']]).astype(int))
+#            )
+        # this should do the trick for a compact format:
+        cls = [n1 for n1, n2, f in js_col_f]
+        jobs_summary[cls][k] = tuple([f(sub_data[n2]) for (n1, n2, f) in js_col_f])
         #
-        # move this into the loop. weird things can happen with buffers...
         del sub_data
     #
     if verbose:
@@ -2769,12 +2785,12 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #
     return jobs_summary
 #
-def get_NGPUS(alloc_tres=None):
+def get_NGPUs(alloc_tres=None):
         #
         #return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0.
         # for s in jobs_summary['AllocTRES'].astype(str)])
         # TODO: get gpu types...
-        return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0. for s in alloc_tres])
+        return numpy.array([float(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0. for s in numpy.array(alloc_tres).astype(str)])
 #
 def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=10000, d_t=None):
     '''
