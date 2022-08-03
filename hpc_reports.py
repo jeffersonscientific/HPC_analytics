@@ -426,5 +426,155 @@ class SACCT_report_handler(object):
         return out_path
 
 
+class Tex_Slides(object):
+    def __init__(self, template_json='tex_components/EARTH_Beamer_template.json',
+                 Short_title='', Full_title='Title',
+               author='Mark R. Yoder, Ph.D.',
+               institution='Stanford University, School of Earth', institution_short='Stanford EARTH',
+              email='mryoder@stanford.edu', foutname='output/HPC_analytics/HPC_analytics.tex',
+              project_tex=None ):
+        # TODO: modify add_slide() function(s) to accept any correct path to a figure, etc. and resolve the relative path
+        #   between the report .tex and the figure (or other). this can be done, more or less like,
+        #   my_path = os.path.relpath(os.path.abspath(fig), os.path.abspath(tex) )
+        #
+        # TODO: test saving/reloading presentation_tex. Also, save inputs, so we can completely reload
+        #  an object? Something like Tex_Slides_Obj.json: {project_tex:{}, input_prams:{}}
+        #
+        # TODO: accept project.json input. this will require handling automated initialization bits, like
+        #  (not) automatically computing the header and title sections. it probably makes sense to do all
+        #  of that during render() anyway.
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+        #
+        # TODO: add an index. handle user content and ordering with this index. it's separate from
+        #. the content dictionary; something simple like [[k, key_k]]. We can nest both in a
+        #  JSON format, so we'll load tex_template like, tex_templates=json.load(fin)['templates']
+        #  ... but for now, let's not worry about order.
+        #
+        #foutname_full = os.path.abspath(foutname)
+        output_path, output_fname = os.path.split(foutname)
+        if not os.path.isdir(output_path):
+            os.makedirs(output_path)
+        #
+        #
+        with open(template_json, 'r') as fin:
+            self.tex_templates=json.load(fin)
+        #self.header = self.get_header()
+        #self.title = self.get_title(Short_title=Short_title, Full_title=Full_title,
+        #      author=author, institution=institution, institution_short=institution_short,
+        #      email=email )
+        #
+        # a dict/json object containing the tex components.
+        if not project_tex is None:
+            if isinstance(project_tex, str):
+                # assume it's a filepath:
+                with open(project_tex, 'r') as fin:
+                    project_tex=json.load(fin)
+            #
+        else:
+            project_tex={}
+        #
+        # TODO: for a more generalized, data-structured approach, consider a loop with a X[ky]=X.get(ky, f(ky) ) type instruction.
+        if not 'header' in project_tex.keys():
+            project_tex['header'] = self.get_header()
+        if not 'title' in project_tex.keys():
+            project_tex['title'] = self.get_title(Short_title=Short_title, Full_title=Full_title,
+            author=author, institution=institution, institution_short=institution_short,
+            email=email )
+        #self.project_tex={'header':self.get_header(), 'title':self.get_title(Short_title=Short_title, Full_title=Full_title,
+        #      author=author, institution=institution, institution_short=institution_short,
+        #      email=email )}
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+    #
+    @property
+    def header(self):
+        return self.project_tex['header']
+    #
+    @property
+    def title(self):
+        return self.project_tex['title']
+    #
+    #
+    def get_header(self):
+        return self.tex_templates['header']
+
+    def get_title(self, Short_title=None, Full_title=None,
+           author=None, institution=None, institution_short=None, email=None ):
+        '''
+        # gets title information from json file
+        '''
+        #
+        return self.tex_templates['title'].format(Short_title=Short_title, Full_title=Full_title, author=author,
+                                    institution=institution, institution_short=institution_short,
+                                             email=email)
+    #
+    def add_fig_slide(self, fig_title='Figure', width='.8', fig_path=''):
+        #
+        # fig_title (aka \frametitle{} ) will complain if it gets an underscore. The "proper" way to write an aunderscore is, \textunderscore, but "\_" should work with
+        #  newer versions of latex. I also sometimes just replace "_" -> "-". handing this bluntly here may be a problem, since shouldn't we be able to use a forumula
+        #  as a title??? So we shold probably be rigorous and confirm that "_" is (not) wrapped in "$", or handle it on the input side... For now, let's handle the input.
+        #  Anyway, we need this to be smart enough to handle corrected input (aka, modify "_" but not "\_")
+        #
+        rel_path = os.path.relpath(fig_path, self.output_path)
+        #
+        self.project_tex['slide_{}'.format(len(self.project_tex))] = self.tex_templates['figslide'].format(fig_title=fig_title, width=width, fig_path=fig_path)
+        
+    #
+    def save_presentation_tex(self, foutname="my_presentation.json"):
+        with open(foutname, 'w') as fout:
+            json.dump(project_tex, fout)
+        #
+    #
+    def render(self, foutname=None):
+        if foutname is None:
+            foutname=self.foutname
+        #
+        output_path, fname = os.path.split(foutname)
+        #
+        # TODO: define relative path something like this...
+        rel_path = os.path.relpath(os.path.abspath(output_path), os.path.abspath(self.foutname) )
+        fname_root, ext  = os.path.splitext(fname)
+        #
+        foutname_tex = os.path.join(output_path, f'{fname_root}.tex')
+        foutname_pdf = os.path.join(output_path, f'{fname_root}.pdf')
+        #
+        print(f'*** DEBUG: output_path: {output_path}, fname: {fname}, **: {fname_root}.pdf')
+        #
+        if not os.path.isdir(output_path):
+            os.makedirs(output_path)
+        #####
+        #
+        #with open(foutname, 'w') as fout:
+        with open(foutname_tex, 'w') as fout:
+            fout.write(self.header)
+            fout.write('\n')
+            fout.write(self.title)
+            #
+            fout.write('\n\n\\begin{document}\n\n')
+            #
+            fout.write("\\begin{frame}\n\\titlepage\n\\end{frame}\n\n")
+            #
+            for ky,val in self.project_tex.items():
+                if ky in ('header', 'title'):
+                    continue
+                #
+                print('** adding slide: {}'.format(ky))
+                #
+                fout.write("\n{}\n".format(val))
+            #
+            fout.write('\n\n\\end{document}\n\n')
+        #
+        # not working yet...
+        # pdflatex command should be something like:
+        #  pdflatex -synctex=1 -interaction=nonstopmode -output-directory=output/HPC_analytics output/HPC_analytics/HPC_analytics.tex
+        # ... but the paths need to be handled more carefully. consider constructing full paths to figs.
+        #
+        #pdf_latex_out = subprocess.run(['pdftex', '-output-directory', output_path, foutname], cwd=None)
+        self.pdf_latex_out = subprocess.run(['pdflatex',  f'{fname_root}.tex'], cwd=output_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        #print('*** pdf_latex status: ', self.pdf_latex_out)
+        
+    #
+#######
         
     
