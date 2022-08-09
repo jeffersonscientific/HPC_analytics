@@ -1016,7 +1016,7 @@ class SACCT_data_handler(object):
         #
         return fg
         
-    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, wedgeprops=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
         # 2 x 2 block of figures showing CPU hours and active jobs, layer-cake by group_by and pie charts of same quantities.
         #  note that CPU hours are constructed timeseries (Either by creating a TS from each time interval and then mapping that to a
@@ -1061,8 +1061,8 @@ class SACCT_data_handler(object):
         #
         z_cpuh = plot_layer_cake(data=cpuh, layers=cpuh.dtype.names[1:], time_col='time', ax=ax1)
         z_jobs = plot_layer_cake(data=jobs, layers=cpuh.dtype.names[1:], time_col='time', ax=ax2)
-        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3)
-        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4)
+        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops)
+        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops)
         #
         ax1.legend(loc=0)
         ax2.legend(loc=0)
@@ -2774,6 +2774,8 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     if verbose:
         print('*** ', cpu_h.shape)
     #
+    #time_step_size = CPU_H['time'][1] - CPU_H['time'][0]
+    #time_step_size = 1.0
     for k,t in enumerate(CPU_H['time']):
         # TODO: wrap this into a (@jit compiled) function to parallelize? or add a recursive block
         #  to parralize the whole function, using an index to break it up.
@@ -2793,10 +2795,11 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
         #                    numpy.max([(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]]) )*24., N_ix
         #print('*** *** ', k,t, N_ix, ix_k)
         #
+        # 2022-08-08, yoder: added x/bin_size to CPU_HOURS calc, which I *think* fixed a sacaling problem.
         # TODO: this can be made faster (probably?) by basically counting all the middle elements and only doing max(), min(), and arithmetic
         #  on the leading and trailing elemnents. But if that breaks vectorization, we'll give up those gains.
         CPU_H[['cpu_hours', 'N_jobs']][k] = numpy.sum( (numpy.min([t*numpy.ones(N_ix), t_end[ix_k]], axis=0) -
-            numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] ), N_ix
+            numpy.max( [(t-bin_size)*numpy.ones(N_ix), t_start[ix_k]], axis=0))*24.*(jobs_summary['NCPUS'])[ix_k] )/bin_size, N_ix
     #
     #CPU_H['cpu_hours']*=24.
     #print('*** returning CPU_H:: ', numpy.shape(CPU_H))
@@ -3070,7 +3073,8 @@ def get_pie_slices(sum_data, slice_data, slice_names=None):
     # This is probably the 'right' way to do this:
     slice_names = numpy.array(slice_names).astype(numpy.array(slice_data).dtype)
     #
-    return numpy.array([[ky,numpy.sum(sum_data[slice_data==ky])] for ky in slice_names])
+    #return numpy.array([[ky,numpy.sum(sum_data[slice_data==ky])] for ky in slice_names])
+    return numpy.array( [(ky,numpy.sum(sum_data[slice_data==ky]) ) for ky in slice_names], dtype=[('name', f'{slice_names.dtype}'), ('value', '<f8')])
 #
 def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, wedgeprops=None, ax=None):
     '''
@@ -3082,15 +3086,16 @@ def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, wedgeprops=No
     #  eg, slice_k = sum(sum_data[slice_data==slice_name_k])
     #
     '''
-    pi_lbls, pi_vls = get_pie_slices(sum_data=sum_data, slice_data=slice_data, slice_names=slice_names).T
-    pi_lbls = pi_lbls.astype(str)
-    pi_vls = numpy.array(pi_vls).astype(float)
+    pi_data = get_pie_slices(sum_data=sum_data, slice_data=slice_data, slice_names=slice_names)
+    #
+    pi_lbls = pi_data['name'].astype(str)
+    pi_vls  = pi_data['value'].astype(float)
     #
     if not n_decimals is None:
         #pi_lbls = numpy.array([f'{lbl}: {vl:.{n_decimals}f}' for lbl, vl in zip(pi_lbls, pi_vls)])
-                pi_lbls = numpy.array([f'{lbl}: {vl:.{n_decimals}f}' for lbl, vl in zip(pi_lbls, pi_vls)])
+        pi_lbls = numpy.array([f'{lbl}: {vl:.{n_decimals}f}' for lbl, vl in zip(pi_lbls, pi_vls)])
     if ax is None:
-        fg = plt.figuer(figsize=(10,8))
+        fg = plt.figure(figsize=(10,8))
         ax = fg.add_subplot(1,1,1)
     #
     pie_data = ax.pie(pi_vls, labels=pi_lbls, wedgeprops=wedgeprops)
