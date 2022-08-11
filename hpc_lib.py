@@ -36,9 +36,6 @@ day_2_sec=24.*3600.
 old_mpd_epoch = '0000-12-31T00:00:00'
 new_mpd_epoch = '1970-01-01T00:00:00'
 dt_mpd_epoch = 719163.0
-
-#
-#default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,'Timelimit':elapsed_time_2_day, 'Start':dtm_handler_default, 'Eligible':dtm_handler_default, 'Elapsed':elapsed_time_2_day, 'MaxRSS':str, 'MaxVMSize':str, 'NNodes':int, 'NCPUS':int, 'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day, 'NTasks':int}
 #
 # TODO: move group_ids, and local-specific things like that to site-specific  modules or data files.
 #
@@ -76,7 +73,6 @@ def datetime_to_SLURM_datestring(dtm, delim='-'):
     #
     return '{}T{}:{}:{}'.format(delim.join([str(x) for x in [dtm.year, zf(dtm.month), zf(dtm.day)]]), zf(dtm.hour), zf(dtm.minute), zf(dtm.second))
 #
-#@numba.jit
 def elapsed_time_2_day(tm_in, verbose=0):
     #
     if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
@@ -85,7 +81,6 @@ def elapsed_time_2_day(tm_in, verbose=0):
     #
     return elapsed_time_2_sec(tm_in=tm_in, verbose=verbose)/(day_2_sec)
 #
-#@numba.jit
 def elapsed_time_2_sec(tm_in, verbose=0):
     #
     # TODO: really??? why not just post the PL value?
@@ -142,17 +137,6 @@ def elapsed_time_2_sec_v(tm_in, verbose=0):
     return numpy.dot([day_2_sec, 3600., 60., 1.], [float(x) for x in (days, h, m, s)])
     #return float(days)*day_2_sec + float(h)*3600. + float(m)*60. + float(s)
 #
-#
-def running_mean(X, n=10):
-    return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
-#
-def write_sacct_batch_script():
-    '''
-    # write a sacct request. Since this is so fast on Sherlock, let's split this into the sacct request and the batch script. we'll probably
-    #  not batch the sacct separately.
-    '''
-    return None
-
 kmg_vals = {'k':1E3, 'm':1E6, 'g':1E9, 't':1E12}
 def kmg_to_num(x):
     '''
@@ -175,6 +159,32 @@ def kmg_to_num(x):
     except:
         return None
 #
+#
+dtm_handler_default = str2date_num
+default_SLURM_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
+        'Timelimit':elapsed_time_2_day,
+            'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
+                    'Eligible':dtm_handler_default,
+                'Elapsed':elapsed_time_2_day, 'MaxRSS':kmg_to_num, 'AveRSS':kmg_to_num,
+                'MaxVMSize':kmg_to_num,'AveVMSize':kmg_to_num,  'NNodes':int, 'NCPUS':int,
+                 'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day,
+                'NTasks':int,'MaxDiskWrite':kmg_to_num, 'AveDiskWrite':kmg_to_num,
+                    'MaxDiskRead':kmg_to_num, 'AveDiskRead':kmg_to_num
+                }
+#
+# yoder, 2022-08-11: updating default_SLURM_types_dict, mostly to facilitate SQUEUE calls. separating it out
+#   (rather than just directly add in the new cols) for posterity. also, adding .lower() and .upper() duplicate
+#   entries to simplify searching.
+default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus']})
+dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict}
+dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict} )
+default_SLURM_types_dict.update(dst_ul)
+del dst_ul
+#
+def running_mean(X, n=10):
+    return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
+#
+
 class SACCT_data_handler(object):
     #
     # TODO: write GRES (gpu, etc. ) handler functions.
@@ -182,20 +192,7 @@ class SACCT_data_handler(object):
     #   more likely a varriation on load_sacct_data() that executes the sacct querries, instead of loading a file.
     dtm_handler_default = str2date_num
     #
-    # 'MaxRSS','AveRSS','AveVMSize','MaxVMSize','MaxDiskWrite','MaxDiskRead','AveDiskWrite','AveDiskRead'
-    #
-    #default_types_dict = default_SLURM_types_dict
-    # yoder: adding vmsize, rss, and IO
-    default_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
-            'Timelimit':elapsed_time_2_day,
-                'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
-                        'Eligible':dtm_handler_default,
-                    'Elapsed':elapsed_time_2_day, 'MaxRSS':kmg_to_num, 'AveRSS':kmg_to_num,
-                    'MaxVMSize':kmg_to_num,'AveVMSize':kmg_to_num,  'NNodes':int, 'NCPUS':int,
-                     'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day,
-                    'NTasks':int,'MaxDiskWrite':kmg_to_num, 'AveDiskWrite':kmg_to_num,
-                        'MaxDiskRead':kmg_to_num, 'AveDiskRead':kmg_to_num
-                    }
+    default_types_dict = default_SLURM_types_dict
     #
     time_units_labels={'hour':'hours', 'hours':'hours', 'hr':'hours', 'hrs':'hours', 'min':'minutes','minute':'minutes', 'minutes':'minutes', 'sec':'seconds', 'secs':'seconds', 'second':'seconds', 'seconds':'seconds'}
     #    
