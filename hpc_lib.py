@@ -176,15 +176,15 @@ default_SLURM_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':st
 #   (rather than just directly add in the new cols) for posterity. also, adding .lower() and .upper() duplicate
 #   entries to simplify searching.
 default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus']})
-dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict}
-dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict} )
+default_SLURM_types_dict.update({'TIMELEFT':elapsed_time_2_day, 'TIMEUSED':elapsed_time_2_day})
+dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict.items()}
+dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict.items()} )
 default_SLURM_types_dict.update(dst_ul)
 del dst_ul
 #
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
 #
-
 class SACCT_data_handler(object):
     #
     # TODO: write GRES (gpu, etc. ) handler functions.
