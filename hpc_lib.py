@@ -3166,4 +3166,40 @@ def date_range_to_timeseries(t_start=0, t_end=None, x_val=None, t0=0., dt=.1):
     # return numpy.array([ts, xs*X]).T
     return numpy.array([ts, xs]).T
     
-    
+def sinfo_ncpus_ngpus(partition='serc', as_tuple=False):
+    '''
+    # get number of cpu CPUs and gpu CPUs and GPUs from sinfo query. Return is like (?)
+    #. {'cpu':N_cpu, 'gpu':N_gpu, 'gpu_cpu': N_gpu_cpu)}
+    # what is the best output? {'gpu':{'gpu':n, 'cpu',m}} ?{'cpu', 'gpu', 'gpu_cpu'?}
+    '''
+    #
+    partition=partition.replace(chr(32), '')
+    #
+    sinfo_str = f'sinfo -p {partition} -N --Format=cpus,gres'
+    cpus_gres = squeue_output = subprocess.run(sinfo_str.split(),
+                                               stdout=subprocess.PIPE).stdout.decode().split('\n')
+    #
+    cpus_gpus = {'cpu': 0, 'gpu': 0, 'gpu_cpu': 0}
+    #
+    for k,rw in enumerate(cpus_gres[1:]):
+        #
+        if len(rw)== 0:
+            continue
+        cpu,gre = rw.split()
+        #
+        n_gpu = None
+        if 'gpu:' in gre:
+            #print(f'** gre: {gre}')
+            k0 = gre.index('gpu:')
+            n_gpu = int(gre[k0+4:gre.index('(',k0) if '(' in gre[k0+4:] else len(gre)])
+            #
+            cpus_gpus['gpu'] += n_gpu
+            cpus_gpus['gpu_cpu'] += int(cpu)
+        else:
+            cpus_gpus['cpu'] += int(cpu)
+        #
+    if as_tuple:
+        return tuple(cpus_gpus[ky] for ky in ('cpu', 'gpu', 'gpu_cpu'))
+    else:
+        return cpus_gpus
+    #
