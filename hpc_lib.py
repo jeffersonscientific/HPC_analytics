@@ -161,7 +161,7 @@ def kmg_to_num(x):
 #
 #
 dtm_handler_default = str2date_num
-default_SLURM_types_dict={'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
+default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
         'Timelimit':elapsed_time_2_day,
             'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
                     'Eligible':dtm_handler_default,
@@ -181,6 +181,8 @@ dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict.items()}
 dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict.items()} )
 default_SLURM_types_dict.update(dst_ul)
 del dst_ul
+# TODO: this addition to default_SLURM_types_dict separated for diagnistic/dev purposes. Integrate it directly into main def.
+default_SLURM_types_dict.update({'Account':str})
 #
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
@@ -262,6 +264,13 @@ class SACCT_data_handler(object):
     def __setitem__(self, *args, **kwargs):
         return self.jobs_summary.__setitem__(*args, **kwargs)
     #
+    @property
+    def dtype(self):
+        if 'jobs_summary' in self.__dict__.keys():
+            return self.jobs_summary.dtype
+        else:
+            return None
+    #
     def get_NGPUs(self, jobs_summary=None, alloc_tres=None):
         #jobs_summary = jobs_summary or self.jobs_summary
         if alloc_tres is None:
@@ -280,6 +289,8 @@ class SACCT_data_handler(object):
     #
     def compute_mpd_epoch_dt(self, test_col='Start', test_index=0, yr_upper=3000, yr_lower=1000):
         #
+        #print('*** DEBUG: ', len(self.jobs_summary), len(self[test_col]))
+        #print('*** DEBUG: ', self[test_col][0:10])
         test_date = self.jobs_summary[test_col][test_index]
         if isinstance(test_date, dtm.datetime):
             test_date = mpd.date2num(test_date)
@@ -1013,7 +1024,7 @@ class SACCT_data_handler(object):
         #
         return fg
         
-    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, wedgeprops=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, wedgeprops=None, autopct=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
         # 2 x 2 block of figures showing CPU hours and active jobs, layer-cake by group_by and pie charts of same quantities.
         #  note that CPU hours are constructed timeseries (Either by creating a TS from each time interval and then mapping that to a
@@ -1058,12 +1069,14 @@ class SACCT_data_handler(object):
         #
         z_cpuh = plot_layer_cake(data=cpuh, layers=cpuh.dtype.names[1:], time_col='time', ax=ax1)
         z_jobs = plot_layer_cake(data=jobs, layers=cpuh.dtype.names[1:], time_col='time', ax=ax2)
-        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops)
-        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops)
+        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops, autopct=autopct)
+        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops, autopct=autopct)
         #
         ax1.legend(loc=0)
         ax2.legend(loc=0)
         #
+        # TODO: return all the data sets in a dict?
+        # return {'fg':fg, 'pie_cpuh_data':pie_cpuh_data, 'pie_jobs_data':pie_jobs_data, etc...}
         return fg
 
     def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10),
@@ -1283,7 +1296,7 @@ class SACCT_data_handler(object):
     #
 
 class SACCT_data_direct(SACCT_data_handler):
-    format_list_default = ['User', 'Group', 'GID', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
+    format_list_default = ['User', 'Group', 'GID', 'Account', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES', 'MaxRSS', 'AveRSS', 'AveVMsize', 'MaxVMsize',
                'MaxDiskWrite', 'MaxDiskRead', 'AveDiskWrite', 'AveDiskRead']
@@ -3073,7 +3086,7 @@ def get_pie_slices(sum_data, slice_data, slice_names=None):
     #return numpy.array([[ky,numpy.sum(sum_data[slice_data==ky])] for ky in slice_names])
     return numpy.array( [(ky,numpy.sum(sum_data[slice_data==ky]) ) for ky in slice_names], dtype=[('name', f'{slice_names.dtype}'), ('value', '<f8')])
 #
-def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, wedgeprops=None, ax=None):
+def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, autopct='%1.1f%%', wedgeprops=None, ax=None):
     '''
     # make a pie chart using the get_pie_slices() helper function.
     # @sum_data: a vector of data to sum by group
@@ -3095,7 +3108,7 @@ def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, wedgeprops=No
         fg = plt.figure(figsize=(10,8))
         ax = fg.add_subplot(1,1,1)
     #
-    pie_data = ax.pie(pi_vls, labels=pi_lbls, wedgeprops=wedgeprops)
+    pie_data = ax.pie(pi_vls, labels=pi_lbls, autopct=autopct, wedgeprops=wedgeprops)
     #
     return pie_data
 #
