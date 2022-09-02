@@ -272,9 +272,9 @@ class SACCT_data_handler(object):
             return None
     #
     def get_NGPUs(self, jobs_summary=None, alloc_tres=None):
-        #jobs_summary = jobs_summary or self.jobs_summary
         if alloc_tres is None:
-            jobs_summary = jobs_summary or self.jobs_summary
+            if jobs_summary is None:
+                jobs_summary = self.jobs_summary
             alloc_tres = jobs_summary['AllocTRES'].astype(str)
         #
         else:
@@ -671,7 +671,8 @@ class SACCT_data_handler(object):
     #
     def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None):
         # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
-        jobs_summary = jobs_summary or self.jobs_summary
+        if jobs_summary is None:
+            jobs_summary = self.jobs_summary
         if NCPUs is None or NCPUs=='':
             NCPUs = jobs_summary['NCPUS']
         #
@@ -727,7 +728,8 @@ class SACCT_data_handler(object):
         #
         '''
         #
-        jobs_summary = jobs_summary or self.jobs_summary
+        if jobs_summary is None:
+            jobs_summary = self.jobs_summary
         #
         # t_min, t_max: These constraints need to be handled up-front, from the whole data set. Subsets will likely return
         #   different t_min/t_max.
@@ -951,7 +953,7 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
-    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, ave_len_days=5., qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
         #  Inputs:
         #   @group_by: column name for grouping
@@ -987,7 +989,7 @@ class SACCT_data_handler(object):
         ax4.set_title('Active Jobs  CDF', size=16)
         #
         if acpu_layer_cake is None:
-            acpu_layer_cake = self.get_active_cpus_layer_cake(layer_field=group_by, n_points=n_points, bin_size=bin_size)
+            acpu_layer_cake = self.get_active_cpus_layer_cake(layer_field=group_by, n_points=n_points, bin_size=bin_size, jobs_summary=jobs_summary)
         #
         #cpus = acpu_layer_cake['N_cpu']
         #jobs = acpu_layer_cake['N_jobs']
@@ -1024,7 +1026,7 @@ class SACCT_data_handler(object):
         #
         return fg
         
-    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, wedgeprops=None, autopct=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, jobs_summary=None, wedgeprops=None, autopct=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
         # 2 x 2 block of figures showing CPU hours and active jobs, layer-cake by group_by and pie charts of same quantities.
         #  note that CPU hours are constructed timeseries (Either by creating a TS from each time interval and then mapping that to a
@@ -1061,16 +1063,17 @@ class SACCT_data_handler(object):
         ax4.set_title('Jobs', size=16)
         #
         if cpuh_jobs is None:
-            cpuh_jobs = self.get_cpu_hours_layer_cake(bin_size=bin_size, layer_field=group_by)
+            cpuh_jobs = self.get_cpu_hours_layer_cake(bin_size=bin_size, jobs_summary=jobs_summary, layer_field=group_by)
         #
+        # shorthand pointers:
         cpuh = cpuh_jobs['cpu_hours']
         jobs = cpuh_jobs['jobs']
         #T = cpuh['time']
         #
         z_cpuh = plot_layer_cake(data=cpuh, layers=cpuh.dtype.names[1:], time_col='time', ax=ax1)
         z_jobs = plot_layer_cake(data=jobs, layers=cpuh.dtype.names[1:], time_col='time', ax=ax2)
-        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops, autopct=autopct)
-        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops, autopct=autopct)
+        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
+        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
         #
         ax1.legend(loc=0)
         ax2.legend(loc=0)
@@ -1766,18 +1769,12 @@ class SACCT_groups_analyzer_report(object):
             # now format the datestrings...
             for ax in (ax1,):
                 # TODO: FIXME: so... this grossly malfunctions for fs-scarp1. it picks up the second positional argument as text, instead of the first. aka:
-#                ticklabels:  [Text(737445.5269299999, 0, '0.000030'), Text(737445.526935, 0, '0.000035'), Text(737445.5269399999, 0, '0.000040'), Text(737445.5269449999, 0, '0.000045'), Text(737445.52695, 0, '0.000050'), Text(737445.5269549999, 0, '0.000055'), Text(737445.5269599999, 0, '0.000060')]
-#                ticklabels:  ['0.000030', '0.000035', '0.000040', '0.000045', '0.000050', '0.000055', '0.000060']
-#                from this:
-#                print('\nticklabels: ', [s for s in ax.get_xticklabels()])
-#                print('ticklabels: ', [s.get_text() for s in ax.get_xticklabels()])
-                #
-                #if ky in ('fs-scarp1'):
-                #    continue
                 #
                 # just trap this so that it works. could throw a warning...
+                # TODO: using xticks() should probably fix this; we can probalby get rid of the exception handling.
                 try:
-                    lbls = [simple_date_string(mpd.num2date( float(s.get_text())) ) for s in ax.get_xticklabels()]
+                    #lbls = [simple_date_string(mpd.num2date( float(s.get_text())) ) for s in ax.get_xticklabels()]
+                    lbls = [simple_date_string(mpd.num2date(x + dt_epoch) ) for x in ax.get_xticks()]
                 except:
                     print('** WARNING: failed writing date text labels:: {}'.format('lbls = "[simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]" '))
                     print('"*** SysInfo: {}'.format(sys.exc_info()[0]))
@@ -1973,25 +1970,13 @@ class SACCT_groups_analyzer_report_handler(object):
         # set ax3 labels to dates:
         # now format the datestrings...
         for ax in (ax1,):
-            #print('*** xticklabels(): {}'.format([s.get_text() for s in ax.get_xticklabels() ] ) )
-            #print('*** xcticks(): {}'.format( ax.get_xticks() ) )
-            #print('*** lbls_prim: {}'.format([simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]) )
-            #print('*** act_jobs[time]: {}'.format(act_jobs['time']))
             #
-            #break
             # TODO: FIXME: so... this grossly malfunctions for fs-scarp1. it picks up the second positional argument as text, instead of the first. aka:
-#                ticklabels:  [Text(737445.5269299999, 0, '0.000030'), Text(737445.526935, 0, '0.000035'), Text(737445.5269399999, 0, '0.000040'), Text(737445.5269449999, 0, '0.000045'), Text(737445.52695, 0, '0.000050'), Text(737445.5269549999, 0, '0.000055'), Text(737445.5269599999, 0, '0.000060')]
-#                ticklabels:  ['0.000030', '0.000035', '0.000040', '0.000045', '0.000050', '0.000055', '0.000060']
-#                from this:
-#                print('\nticklabels: ', [s for s in ax.get_xticklabels()])
-#                print('ticklabels: ', [s.get_text() for s in ax.get_xticklabels()])
-            #
-            #if ky in ('fs-scarp1'):
-            #    continue
             #
             # just trap this so that it works. could throw a warning...
+            # TODO: may need to add epoch handling as well...
             try:
-                lbls = [simple_date_string(mpd.num2date( float(s) ) ) for s in ax.get_xticks()]
+                lbls = [simple_date_string(mpd.num2date( float(x) ) ) for x in ax.get_xticks()]
             except:
                 print('** WARNING: failed writing date text labels:: {}'.format('lbls = "[simple_date_string(mpd.num2date(max(1, float(s.get_text())) ) ) for s in ax.get_xticklabels()]" '))
                 print('"*** SysInfo: {}'.format(sys.exc_info()[0]))
@@ -3039,6 +3024,8 @@ def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
     #
     if layers is None:
         if hasattr(data, 'dtype'):
+            # assume dtype.names = (time, layer_1, layer_2, layer_3..., layer_n)
+            # NOTE: the selection criteria for array,dict are not logically identical...
             layers = data.dtype.names[1:]
         else:
             layers = [ky for ky in data.keys() if not ky == time_col]
@@ -3058,8 +3045,12 @@ def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
     #
     fg.canvas.draw()
     dt_epoch = compute_mpd_epoch_dt(T[0])
-    lbls = [simple_date_string(mpd.num2date(float(fix_to_ascii(str(s.get_text()))) + dt_epoch) )
-              for s in ax.get_xticklabels()]
+    #
+    # there may have been a reason for doing ticklabels this way, but I'm not seeing it. switching to
+    #  more direct xticks(). Should find other instances as well..
+#    lbls = [simple_date_string(mpd.num2date(float(fix_to_ascii(str(s.get_text()))) + dt_epoch) )
+#              for s in ax.get_xticklabels()]
+    lbls = [simple_date_string(mpd.num2date(x + dt_epoch) ) for x in ax.get_xticks()]
     ax.set_xticklabels(lbls)
     #
     return numpy.array([T,z]).transpose()
