@@ -158,9 +158,21 @@ def kmg_to_num(x):
         return float(x[:-1]) * kmg_vals[x[-1].lower()]
     except:
         return None
+def space_replacer(s, space_to='_', space_ord=32):
+    # NOTE: default is to replace space with '_', but can be abstracted. Let's also handle bytearrays...
+    # NOTE: we'll put in a hack for bytes array, but we should be getting the ecoding from the input.
+    # for now, let's not do this. bytes vs string can be handled by the calling function. If we handle it here, we
+    # restrict it to a sort of hacked handling.
+    #if isinstance(s,bytes):
+    #    return s.replace(chr(space_ord).encode(), space_to.encode())
+    #
+    #if not isinstance(s,str):
+    #    s = str(s)
+    return str(s).replace(chr(space_ord), space_to)
 #
 #
 dtm_handler_default = str2date_num
+# TODO: write this as a class, inherit from dict, class(dict):
 default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
         'Timelimit':elapsed_time_2_day,
             'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
@@ -219,6 +231,7 @@ class SACCT_data_handler(object):
         #  function or leave them in __init__() where they probably belong.
         #
         n_cpu = int(n_cpu or 1)
+        n_cpu = int(n_cpu)
         #
         if types_dict is None:
             #
@@ -415,6 +428,7 @@ class SACCT_data_handler(object):
         # I think the "nonelike" syntax is actually favorable here:
         n_cpu = (n_cpu or self.n_cpu)
         n_cpu = (n_cpu or 1)
+        n_cpu = int(n_cpu)
         #
         if verbose:
             print('*** calc_jobs_summary: with prams: len(data)={}, verbose={}, n_cpu={}, step_size={}'.format(len(data), verbose, n_cpu, step_size))
@@ -518,21 +532,39 @@ class SACCT_data_handler(object):
         return pandas.DataFrame(data, columns=active_headers).to_records()
         #
     #@numba.jit
-    def process_row(self, rw, headers=None, RH=None):
+    def process_row(self, rw, headers=None, RH=None, delim=None):
         # use this with MPP processing:
         # ... but TODO: it looks like this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
         #  class object... so we need to move the MPP object out of class.
         #
+        # get rid of spaces. Values like State="CANCELED by 12345" seem to generate errors under some
+        #   circumstances?
+        rw = rw.replace(chr(32), '_')
+        #
         headers = (headers or self.headers)
         RH      = (RH or self.RH)
+        if delim is None:
+            delim = self.delim
         # use this for MPP processing:
-        rws = rw.split(self.delim)
+        rws = rw.split(delim)
         #print('*** DEBUG lens: ', len(rws), len(headers))
         #return [None if vl=='' else self.types_dict.get(col,str)(vl)
         #            for k,(col,vl) in enumerate(zip(self.headers, rw.split(self.delim)[:-1]))]
         # NOTE: last entry in the row is JobID_parent.
-        return [None if vl=='' else self.types_dict.get(col,str)(vl)
+        #
+        # DEBUG:
+#        print('*** rw: ', rw)
+#        print('*** hdrs: ', headers)
+#        print('*** RH: ', RH)
+        #
+        try:
+            return [None if vl=='' else self.types_dict.get(col,str)(vl)
                     for k,(col,vl) in enumerate(zip(headers, rws[:-1]))] + [rws[RH['JobID']].split('.')[0]]
+        except:
+            print('*** EXCEPTION! with row: ', rw)
+            print('*** HEADERS: ', headers)
+            print('*** RH: ', RH)
+            raise Exception()
     #
     # GIT Note: Deleting the depricated get_cpu_hours_2() function here. It can be recovered from commits earlier than
     #  31 Aug 2020.
@@ -1299,7 +1331,11 @@ class SACCT_data_handler(object):
     #
 
 class SACCT_data_direct(SACCT_data_handler):
-    format_list_default = ['User', 'Group', 'GID', 'Account', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
+    # 3 Oct 2022 yoder: skip Jobname; we wrestled a few hours with this because somebody decided
+    #   it was a good idea to put a "|" in their jobname. Not much value in Jobname, it's user defined (and so
+    #   unreliable), and expensive to store.
+    # , 'Jobname'
+    format_list_default = ['User', 'Group', 'GID', 'Account', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES', 'MaxRSS', 'AveRSS', 'AveVMsize', 'MaxVMsize',
                'MaxDiskWrite', 'MaxDiskRead', 'AveDiskWrite', 'AveDiskRead']
@@ -1414,7 +1450,7 @@ class SACCT_data_direct(SACCT_data_handler):
     def load_sacct_data(self, options_str='', format_string='', n_cpu=None, start_end_times=None, max_rows=None, verbose=None):
         #
         n_cpu = n_cpu or self.n_cpu
-        n_cpu = n_cpu or 4
+        n_cpu = int(n_cpu or 4)
         #
         verbose = verbose or self.verbose
         verbose = verbose or False
@@ -2733,7 +2769,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
                 ('NGPUs', 'AllocTRES', lambda x: numpy.nanmax(get_NGPUs(x)).astype(int) )
                 ]
     #
-    n_cpu = (n_cpu or 1)
+    n_cpu = int(n_cpu or 1)
     js_dtype = numpy.dtype([(n, t[0] if isinstance(t,tuple) else t) for n,t in data.dtype.descr ] + [('NGPUs', '<i8')] )
     if verbose:
         print('*** computing jobs_summary func on {} cpu'.format(n_cpu))
@@ -2940,7 +2976,7 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     #
     # stash a copy of input prams:
     inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
-    n_cpu = (n_cpu or 1)
+    n_cpu = int(n_cpu or 1)
     cpuh_dtype = [('time', '>f8'),
         ('t_start', '>f8'),
         ('cpu_hours', '>f8'),
