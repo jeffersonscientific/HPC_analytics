@@ -158,9 +158,21 @@ def kmg_to_num(x):
         return float(x[:-1]) * kmg_vals[x[-1].lower()]
     except:
         return None
+def space_replacer(s, space_to='_', space_ord=32):
+    # NOTE: default is to replace space with '_', but can be abstracted. Let's also handle bytearrays...
+    # NOTE: we'll put in a hack for bytes array, but we should be getting the ecoding from the input.
+    # for now, let's not do this. bytes vs string can be handled by the calling function. If we handle it here, we
+    # restrict it to a sort of hacked handling.
+    #if isinstance(s,bytes):
+    #    return s.replace(chr(space_ord).encode(), space_to.encode())
+    #
+    #if not isinstance(s,str):
+    #    s = str(s)
+    return str(s).replace(chr(space_ord), space_to)
 #
 #
 dtm_handler_default = str2date_num
+# TODO: write this as a class, inherit from dict, class(dict):
 default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
         'Timelimit':elapsed_time_2_day,
             'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
@@ -219,6 +231,7 @@ class SACCT_data_handler(object):
         #  function or leave them in __init__() where they probably belong.
         #
         n_cpu = int(n_cpu or 1)
+        n_cpu = int(n_cpu)
         #
         if types_dict is None:
             #
@@ -415,6 +428,7 @@ class SACCT_data_handler(object):
         # I think the "nonelike" syntax is actually favorable here:
         n_cpu = (n_cpu or self.n_cpu)
         n_cpu = (n_cpu or 1)
+        n_cpu = int(n_cpu)
         #
         if verbose:
             print('*** calc_jobs_summary: with prams: len(data)={}, verbose={}, n_cpu={}, step_size={}'.format(len(data), verbose, n_cpu, step_size))
@@ -518,21 +532,39 @@ class SACCT_data_handler(object):
         return pandas.DataFrame(data, columns=active_headers).to_records()
         #
     #@numba.jit
-    def process_row(self, rw, headers=None, RH=None):
+    def process_row(self, rw, headers=None, RH=None, delim=None):
         # use this with MPP processing:
         # ... but TODO: it looks like this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
         #  class object... so we need to move the MPP object out of class.
         #
+        # get rid of spaces. Values like State="CANCELED by 12345" seem to generate errors under some
+        #   circumstances?
+        rw = rw.replace(chr(32), '_')
+        #
         headers = (headers or self.headers)
         RH      = (RH or self.RH)
+        if delim is None:
+            delim = self.delim
         # use this for MPP processing:
-        rws = rw.split(self.delim)
+        rws = rw.split(delim)
         #print('*** DEBUG lens: ', len(rws), len(headers))
         #return [None if vl=='' else self.types_dict.get(col,str)(vl)
         #            for k,(col,vl) in enumerate(zip(self.headers, rw.split(self.delim)[:-1]))]
         # NOTE: last entry in the row is JobID_parent.
-        return [None if vl=='' else self.types_dict.get(col,str)(vl)
+        #
+        # DEBUG:
+#        print('*** rw: ', rw)
+#        print('*** hdrs: ', headers)
+#        print('*** RH: ', RH)
+        #
+        try:
+            return [None if vl=='' else self.types_dict.get(col,str)(vl)
                     for k,(col,vl) in enumerate(zip(headers, rws[:-1]))] + [rws[RH['JobID']].split('.')[0]]
+        except:
+            print('*** EXCEPTION! with row: ', rw)
+            print('*** HEADERS: ', headers)
+            print('*** RH: ', RH)
+            raise Exception()
     #
     # GIT Note: Deleting the depricated get_cpu_hours_2() function here. It can be recovered from commits earlier than
     #  31 Aug 2020.
@@ -1299,7 +1331,11 @@ class SACCT_data_handler(object):
     #
 
 class SACCT_data_direct(SACCT_data_handler):
-    format_list_default = ['User', 'Group', 'GID', 'Account', 'Jobname', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
+    # 3 Oct 2022 yoder: skip Jobname; we wrestled a few hours with this because somebody decided
+    #   it was a good idea to put a "|" in their jobname. Not much value in Jobname, it's user defined (and so
+    #   unreliable), and expensive to store.
+    # , 'Jobname'
+    format_list_default = ['User', 'Group', 'GID', 'Account', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES', 'MaxRSS', 'AveRSS', 'AveVMsize', 'MaxVMsize',
                'MaxDiskWrite', 'MaxDiskRead', 'AveDiskWrite', 'AveDiskRead']
@@ -1414,7 +1450,7 @@ class SACCT_data_direct(SACCT_data_handler):
     def load_sacct_data(self, options_str='', format_string='', n_cpu=None, start_end_times=None, max_rows=None, verbose=None):
         #
         n_cpu = n_cpu or self.n_cpu
-        n_cpu = n_cpu or 4
+        n_cpu = int(n_cpu or 4)
         #
         verbose = verbose or self.verbose
         verbose = verbose or False
@@ -1643,6 +1679,282 @@ class SACCT_data_from_h5(SACCT_data_handler):
         self.h5out_file = h5out_file
         #
 #
+class SQUEUE_obj(object):
+    # SQUEUE manager, principally to estimate realtime SLURM activity. Like SACCT_obj, but
+    #  uses squeue. We *could* use SACCT_obj and just limit to --State=running,pending
+    #. but it seems that sacct is much slower than squeue.
+    #
+    def __init__(self, partition='serc', format_fields_dict=None, squeue_prams=None, verbose=False):
+        #
+        # @squeue_prams: additional or replacement fields for squeue_fields variable, eg parameters
+        #. to pass to squeue. Presently, --Format and --partition are specified. some options might also
+        #. be allowed as regular inputs. Probably .update(squeue_prams) will be the last thing done, so
+        #  will overried other inputs.
+        #
+        # TODO: add ***kwargs and handle syantax like SQU_{something} to add to squeue_fields, etc.
+        
+        if format_fields_dict is None:
+            format_fields_dict = default_SLURM_types_dict
+#             format_fields.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus']})
+#             #
+#             ff_l = {ky.lower():val for ky,val in format_fields.items()}
+#             ff_u = {ky.upper():val for ky,val in format_fields.items()}
+#             format_fields.update(ff_l)
+#             format_fields.update(ff_u)
+#             del ff_l
+#             del ff_u
+        #
+        squeue_fields = {'--Format': ['jobid', 'jobarrayid', 'partition', 'name', 'username', 'timeused',
+                                      'timeleft', 'numnodes', 'numcpus', 'numtasks', 'state', 'nodelist'],
+                      '--partition': [partition]
+                      }
+        if isinstance(squeue_prams, dict):
+            squeue_fields.update(squeue_prams)
+        #
+        squeue_delim=';'
+        sinfo_str = 'squeue '
+        for ky,vl in squeue_fields.items():
+            delim=' '
+            if ky.startswith('--'):
+                # long format
+                delim='='
+            #
+            sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, f':{squeue_delim},'.join(vl))
+        #
+        if verbose:
+            print('*** sinfo_str: {}'.format(sinfo_str))
+            print('*** sinfo_ary: {}'.format(sinfo_str.split()))
+        #
+        # TODO:
+        # port some of these bits to class-scope function calls, for class portability
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+        self.set_squeue_data()
+    #
+    def set_squeue_data(self):
+        self.squeue_data = self.get_squeue_data()
+        self.dtype       = self.squeue_data.dtype
+    #
+    def __getitem__(self, *args, **kwargs):
+        return self.squeue_data.__getitem__(*args, **kwargs)
+    def __setitem__(self, *args, kwargs):
+        return self.squeue_data.__setitem__
+    #
+    def get_squeue_data(self, sinfo_str=None, squeue_delim=None, verbose=False):
+        sinfo_str = sinfo_str or self.sinfo_str
+        squeue_delim = squeue_delim or self.squeue_delim
+        #
+        print(f'** squeue: {sinfo_str}' )
+        squeue_output = subprocess.run(sinfo_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
+        #cols = squeue_output[0].split(squeue_delim)
+        #
+        # there is a smarter way to do this, eg:
+        cols = squeue_output[0].split(squeue_delim)
+        for k,cl in enumerate(cols):
+            cl_0 = cl
+            k_rep = 0
+            while cols[k] in cols[0:k]:
+                cols[k] = f'{cl}_{k_rep}'
+        if verbose:
+            print('** cols: ', cols)
+        #
+        return pandas.DataFrame(data=[[self.format_fields_dict.get(cl.lower(),str)(x)
+                                  for x, cl in zip(rw.split(squeue_delim),
+                                self.squeue_fields['--Format']) ]
+                                 for rw in squeue_output[1:] if not len(rw.strip()) == 0],
+                                   columns=cols).to_records()
+    #
+    def get_active_jobs(self, *args, **kwargs):
+        # print('** DEBUG: args: {}'.format(args))
+        if len(args)>=6:
+            args[5]
+        kwargs['do_jobs'] = True
+        return get_active_cpus(*args, **kwargs)
+    #
+    def get_active_cpus(self, state='running,pending', do_refresh=False, state_data=None, ncpus=None, do_cpus=True, do_jobs=False):
+        if do_refresh:
+            self.set_squeue_data()
+        #
+        if isinstance(state,bytes):
+            state=state.decode()
+        if isinstance(state,str):
+            state=state.split(',')
+        #
+        for k,s in enumerate(state):
+            state[k] = s.upper()
+        #
+        if state_data is None:
+            state_data = self['STATE']
+        if ncpus is None:
+            ncpus = self['CPUS']
+        #
+        ix = numpy.isin(state_data, state)
+        n_jobs, n_cpus = numpy.sum(ix), numpy.sum(ncpus[ix])
+        #
+        if do_cpus and do_jobs:
+            return (n_jobs, n_cpus)
+        if do_cpus:
+            return n_cpus
+        if do_jobs:
+            return n_jobs
+    #
+    def simple_wait_estimate(self, ncpus=1, max_cpus=4600, do_refresh=False):
+        # TODO: figure out the right way(s) to get max_cpus from system.
+        active_cpus = self.get_active_cpus(state='running,pending', do_refresh=do_refresh)
+        avail_cpus = max_cpus - active_cpus
+        #
+        if ncpus <= avail_cpus:
+            return 0
+        #
+        cpus_needed = ncpus - avail_cpus
+        #
+        # now, spin down self['TIME_LEFT'] until we have enough CPUs to do our job. that TIME_LEFT is
+        #. when our job should be available.
+        #
+        return None
+    #
+    def report_user_cpu_job_pies(self, state='RUNNING,PENDING', cpus_total=5456, add_idle=True, ax1=None, ax2=None):
+        #
+        # TODO: use scontrol or sinfo to get an automagical cpus_total count.
+        #
+        user_data = self.get_user_cpu_job_data(state=state, add_idle=add_idle)
+        #
+        if ax1 is None or ax2 is None:
+            fg = plt.figure(figsize=(12,8))
+            ax1 = fg.add_subplot(1,2,1)
+            ax2 = fg.add_subplot(1,2,2)
+        #
+        ax1.pie(user_data['jobs'],  labels=user_data['user'], autopct='%.1f')
+        ax2.pie(user_data['ncpus'], labels=user_data['user'], autopct='%.1f')
+        #
+        ax1.set_title('Jobs', size=16)
+        ax2.set_title('CPUs', size=16)
+        #
+        #ax1.legend(loc=0)
+        
+        return user_data
+    #
+    def get_user_cpu_job_data(self, state='RUNNING,PENDING', cpus_total=5456, add_idle=True):
+        #partition = partition or self.partition
+        if isinstance(state,bytes):
+            state=state.decode()
+        if isinstance(state,str):
+            state = state.split(',')
+        sq = self[numpy.isin(self['STATE'].astype(type(state)), state)]
+        print('*** ', self['STATE'].astype(type(state))[0:10], '*** ', state)
+        #
+        users = list([u for u in set(sq['USER']) if not u is None])
+        #if add_idle:
+        #    users += ['idle']
+        print('** users: ', users)
+        #
+        out_data = numpy.empty(shape=(len(users) + int(add_idle),),
+                    dtype=[('user', f'U{max([len(s) for s in users])}'), ('jobs', '<f8'), ('ncpus', '<f8')])
+        
+        #out_data['jobs'] = numpy.zeros(len(users))
+        #out_data['ncpus'] = numpy.zeros(len(users))
+        #
+        # NOTE: there is also a (faster) syntax to broadcast this, then sum on an axis.
+        jobs  = [numpy.sum( (self['USER']==u) ) for u in users]
+        ncpus = [numpy.sum( self['CPUS'][(self['USER']==u)] ) for u in users]
+        #
+        if add_idle:
+            jobs += [0]
+            ncpus += [cpus_total-numpy.sum(ncpus)]
+            users += ['idle']
+        #
+        out_data['user']  = users
+        out_data['jobs']  = jobs
+        out_data['ncpus'] = ncpus
+        #
+        return out_data
+#
+class SPART_obj(object):
+    # Python handler for SPART,or partition summary info kabob.
+    # SPART looks like a third party tool to provide partition type info.
+    # https://github.com/mercanca/spart
+    #
+    def __init__(self, options='gmft', format_fields_dict=None, verbose=False):
+        '''
+        # @options: spart options (see docs or man or whatever...). Can be list-like or string.
+        # internally, this will get parsed into a list of unique letter values and passed like, '-g -m -f'
+        #
+        '''
+        #
+        options = [ (s.decode() if hasattr(s, 'decode') else s) for s in options]
+        spart_str = 'spart {}'.format(' '.join(f'-{s}' for s in options) )
+        self.SP = self.get_spart_data(spart_str=spart_str)
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+
+    def get_spart_data(self, spart_str=None, verbose=False):
+        spart_str = spart_str or self.spart_str
+        #
+        squeue_output = subprocess.run(spart_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
+        squeue_output = [rw.replace('|', '') for rw in squeue_output]
+        #print('** DEBUG: ', squeue_output)
+        #
+        # the output is a bit of a mess, but we can put it together...
+        for k,rw in enumerate(squeue_output):
+            if rw.lstrip().startswith('QUEUE'):
+                cols = rw.split()
+                cols = [f'{c1}{c2}' for c1,c2 in zip(cols, squeue_output[k+1].split()) ]
+                #
+                break
+            #
+        data = [rw.split() for rw in squeue_output[k+2:] if not len(rw)==0]
+        
+        #return [cols] + data
+        return pandas.DataFrame(data=data, columns=cols, index=[rw[0] for rw in data])
+    #
+    @property
+    def cols(self):
+        return self.SP.columns
+    #
+    def get_total_cpus(self, partitions='normal'):
+        if isinstance(partitions, str):
+            partitions = partitions.split(',')
+        #
+        return numpy.sum(self.SP['TOTALCORES'][partitions].to_numpy().astype(float))
+    def get_total_gpus(self, partitions='gpu', verbose=False):
+        # gpus in GRES, like: gpu:4(S:0)(2),gpu:8(S:0-3)(6)
+        if isinstance(partitions, str):
+            partitions = partitions.split(',')
+        #
+        gres = self.SP['GRES(NODE-COUNT)'][partitions].to_list()
+        #
+        # flatten and split by 'gpu:' entries:
+        gres = [s for ss in gres for s in ss.split(',') if s.startswith('gpu')]
+        #
+        # TODO: The right way to do this is with regular expressions. but I hate regular expressions,
+        #. so for now, we'll just hack it.
+        #expr='gpu:\d+(S:.*)(\d+)'
+        ngpus = 0
+        for k,s in enumerate(gres):
+            if verbose:
+                print('** * DEBUG: gres: ', gres)
+            n_gpu = s[4:s.index('(')]
+            #print(f'** {s}, {n_gpu}')
+            #
+            if '(S:' in s:
+                N_server = s[s.index('(',s.index('(')+1)+1:s.index(')', s.index(')')+1  ) ]
+            else:
+                try:
+                    N_server = s[s.index('(')+1 : s.index(')')]
+                except:
+                    N_server = 1
+            #
+            #print(f'** [{k}] : {s} :: {n_gpu} :: {N_server} ')
+            #
+            ngpus += int(n_gpu)*int(N_server)
+            
+            
+        
+            
+        return ngpus
+ 
+#
+# TODO: reports should be (may have already been?) moved to hpc_reports
 class SACCT_groups_analyzer_report(object):
 
     def __init__(self, Short_title='HPC Analytics', Full_title='HPC Analitics Breakdown for Mazama',
@@ -2457,7 +2769,7 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
                 ('NGPUs', 'AllocTRES', lambda x: numpy.nanmax(get_NGPUs(x)).astype(int) )
                 ]
     #
-    n_cpu = (n_cpu or 1)
+    n_cpu = int(n_cpu or 1)
     js_dtype = numpy.dtype([(n, t[0] if isinstance(t,tuple) else t) for n,t in data.dtype.descr ] + [('NGPUs', '<i8')] )
     if verbose:
         print('*** computing jobs_summary func on {} cpu'.format(n_cpu))
@@ -2664,7 +2976,7 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
     #
     # stash a copy of input prams:
     inputs = {ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')}
-    n_cpu = (n_cpu or 1)
+    n_cpu = int(n_cpu or 1)
     cpuh_dtype = [('time', '>f8'),
         ('t_start', '>f8'),
         ('cpu_hours', '>f8'),
