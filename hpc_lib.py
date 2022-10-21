@@ -3207,3 +3207,18 @@ def sinfo_ncpus_ngpus(partition='serc', as_tuple=False):
     else:
         return cpus_gpus
     #
+#
+def fg_time_labels_to_dates(ax, dt_epoch=None):
+    '''
+    # convert an axis x-coordinates from float-date to date-date strings.
+    '''
+    fg = ax.figure
+    x_ticks = ax.get_xticks()
+    if dt_epoch is None:
+        dt_epoch = compute_mpd_epoch_dt(x_ticks[0])
+    lbls = [simple_date_string(mpd.num2date(x+dt_epoch)) for x in x_ticks]
+    #
+    fg.canvas.draw()
+    ax.set_xticklabels(lbls)
+    #
+    return lbls
