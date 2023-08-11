@@ -54,7 +54,7 @@ class SACCT_report_handler(object):
         tex_path  = os.path.join(out_path, 'tex')
         self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
         #
-        self.HPC_tex_obj = (TEX_obj or hpc_lib.Tex_Slides(Short_title=self.Short_title,
+        self.HPC_tex_obj = (TEX_obj or Tex_Slides(Short_title=self.Short_title,
                  Full_title=self.Full_title,
                  foutname=os.path.join(tex_path, tex_filename)) )
     #

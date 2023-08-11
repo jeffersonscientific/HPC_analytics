@@ -181,7 +181,8 @@ default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':
                 'MaxVMSize':kmg_to_num,'AveVMSize':kmg_to_num,  'NNodes':int, 'NCPUS':int,
                  'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day,
                 'NTasks':int,'MaxDiskWrite':kmg_to_num, 'AveDiskWrite':kmg_to_num,
-                    'MaxDiskRead':kmg_to_num, 'AveDiskRead':kmg_to_num
+                    'MaxDiskRead':kmg_to_num, 'AveDiskRead':kmg_to_num,
+                    'ReqMem': kmg_to_num
                 }
 #
 # yoder, 2022-08-11: updating default_SLURM_types_dict, mostly to facilitate SQUEUE calls. separating it out
@@ -300,11 +301,21 @@ class SACCT_data_handler(object):
         return numpy.array([int(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0
          for s in alloc_tres]).astype(int)
     #
-    def compute_mpd_epoch_dt(self, test_col='Start', test_index=0, yr_upper=3000, yr_lower=1000):
+    def compute_mpd_epoch_dt(self, test_col='Submit', test_index=0, yr_upper=3000, yr_lower=1000):
         #
         #print('*** DEBUG: ', len(self.jobs_summary), len(self[test_col]))
         #print('*** DEBUG: ', self[test_col][0:10])
-        test_date = self.jobs_summary[test_col][test_index]
+        test_date = None
+        while test_date is None:
+            x = self[test_col][test_index]
+            if not isinstance(x,float) or isinstance(x,int) or isinstance(x,dtm.datetime):
+                test_index += 1
+                continue
+            test_date = self.jobs_summary[test_col][test_index]
+        if test_date is None:
+            test_date = dtm.datetime.now(pytz.timezone('UTC'))
+            #
+        #
         if isinstance(test_date, dtm.datetime):
             test_date = mpd.date2num(test_date)
 #        dt_epoch = 0.
@@ -1115,7 +1126,7 @@ class SACCT_data_handler(object):
         return fg
 
     def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10),
-     cpu_usage=None, verbose=0, foutname=None, periodic_projection='rectilinear'):
+     cpu_usage=None, verbose=0, foutname=None, periodic_projection='rectilinear', polar=False):
         '''
         # 2x3 figure of instantaneous usage (active cpus, jobs per day, week,
         #  periodic/seasonal usage -- day of week, hour of day aggregates)
@@ -1124,6 +1135,9 @@ class SACCT_data_handler(object):
         if cpu_usage is None:
             cpu_usage = self.cpu_usage
         #
+        if polar:
+            periodic_projection='polar'
+
         # Polar, etc. projections:
         # allowed projections (probably) include:
         #  {None, 'aitoff', 'hammer', 'lambert', 'mollweide', 'polar', 'rectilinear', str}
@@ -1335,7 +1349,7 @@ class SACCT_data_direct(SACCT_data_handler):
     #   it was a good idea to put a "|" in their jobname. Not much value in Jobname, it's user defined (and so
     #   unreliable), and expensive to store.
     # , 'Jobname'
-    format_list_default = ['User', 'Group', 'GID', 'Account', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus',
+    format_list_default = ['User', 'Group', 'GID', 'Account', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus', 'ReqMem',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES', 'MaxRSS', 'AveRSS', 'AveVMsize', 'MaxVMsize',
                'MaxDiskWrite', 'MaxDiskRead', 'AveDiskWrite', 'AveDiskRead']
@@ -1952,7 +1966,49 @@ class SPART_obj(object):
         
             
         return ngpus
- 
+#
+class SH_PART_obj(SPART_obj):
+    # turns out that spart is not compatible with the new version(s) of SLURM.
+    #. Kilian had to rewrite spart --> sh_part, and so shal we...
+    #  So hopefully, we can limit this modification to __init__(), get_(sh/s)part_data(), and
+    #. maybe some introductory variable definitions.
+    #
+    def __init__(self, format_fields_dict=None, verbose=False):
+        sh_part_str = 'sh_part ' # I don't think there are any options...
+        self.SP = self.get_data(sh_part_str=sh_part_str)
+        #
+        self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
+    
+    def get_spart_data(self, *args, **kwargs):
+        print('*** DEPRICATION: get_spart_data() removed from this class version.')
+        return None
+    #
+    def get_data(self, sh_part_str):
+        '''
+        # TODO: this is very much in progress...
+        #
+        # regrets... should have just called get_spart_data() get_data(), so we can override it.
+        # we will correct that here and just nulify get_spart_data().
+        #
+        # sh_part has some nice human readable, hierarchical formatting, which we'll just get rid of
+        #. to make it more machine readable.
+        #. currently, row (of interest) sequence is:
+        #. p_name, is_public, nodes_idle nodes_total, cpus_idle, cpus_total, cpus_queued, gpus_idle, gpus_total, gpus_queued, job_runtime_default, job_runtime_max, cores_per_node, mem_per_Node, gpus_per_node.
+        #. so we'll be interested principally in cols [0,5,8] --> [name,cpus,gpus]
+        '''
+        #
+        # don't think there are any options for sh_part, but one day there might be...
+        sh_part_str = sh_part_str or self.sh_part_str
+        #
+        #
+        str_output = subprocess.run(sh_part_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
+        #
+        # preprocessing...
+        str_output = [rw.replace('|', '') for rw in str_output]
+        #
+        sh_part_data = str_output
+        return sh_part_data
+    #
 #
 # TODO: reports should be (may have already been?) moved to hpc_reports
 class SACCT_groups_analyzer_report(object):
