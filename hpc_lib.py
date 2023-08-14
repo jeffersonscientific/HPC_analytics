@@ -1997,16 +1997,51 @@ class SH_PART_obj(SPART_obj):
         #. so we'll be interested principally in cols [0,5,8] --> [name,cpus,gpus]
         '''
         #
+        # build data type/funct_dict:
+        col_f_dict = {'nodes_idle':int, 'nodes_total':int}
+        col_f_dict.update({f'cpu_cores_{s}':int for s in ('idle', 'total', 'queued')})
+        col_f_dict.update({f'gpus_{s}':int for s in ('idle', 'total', 'queued')})
+        ##col_f_dict.update({f'job_runtime_{s}':str for s in ('default', 'maximum')})  # defer to default for now...
+        #
         # don't think there are any options for sh_part, but one day there might be...
         sh_part_str = sh_part_str or self.sh_part_str
+        sh_part_output = subprocess.run(sh_part_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         #
+        self.sh_part_output = sh_part_output
         #
-        str_output = subprocess.run(sh_part_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
+        col_categories = [s.strip().lower().replace('*','') for s in sh_part_output[0].split('|') if not s.strip()=='']
+        col_groups     = [[s.strip().lower().replace('*','') for s in x.split()] for x in sh_part_output[1].split('|') if not x.strip()=='']
         #
-        # preprocessing...
-        str_output = [rw.replace('|', '') for rw in str_output]
+        columns = [f'{s1}_{s2}'.strip().replace(' ', '_') for s1,S in zip(col_categories, col_groups) for s2 in S]
+        col_index = {k:cl for k,cl in enumerate(columns)}
+        self.columns = columns
+        del col_categories
+        del col_groups
         #
-        sh_part_data = str_output
+        # now, there will basically be up to 3 groups of partitions: public, not-public, owners. These are separated
+        # by a dash-line ('--------...----')
+        # start by just collecting the data; later we'll need to format it. Note also, if we want to get chici about it,
+        # we'll need to split the per-node fields, eg: per-node_cores_min, per-node_cores_min.
+        #
+        #sh_part_data = [rw.lower().replace('|','').split() for rw in sh_part_output[2:] if not (rw.startswith('----') or len(rw.strip())==0)]
+        sh_part_data = [[col_f_dict.get(col_index[k], str)(x) for k,x in enumerate(rw.lower().replace('|','').split())] for rw in sh_part_output[2:] if not (rw.startswith('----') or len(rw.strip())==0)]
+        #
+        # constructr dtype:
+        # is there a less stupid way to do this??? I swear there is...
+        shp_dtype = []
+        for k, (x,cl) in enumerate(zip(sh_part_data[0], columns)):
+            if isinstance(x,bytes) or isinstance(x,str):
+                # I think we can use 'S{n}' for both of these?
+                shp_dtype += [tuple([cl, f'S{max([len(rw[k]) for rw in sh_part_data])}'])]
+            elif isinstance(x,int):
+                shp_dtype += [tuple([cl, 'i8'])]
+            elif isinstance(x,float):
+                shp_dtype += [tuple([cl, 'f8'])]
+            else:
+                shp_dtype += [tuple([cl, 'S8'])]
+            #
+        print('** DEBUG: ', shp_dtype)
+        #
         return sh_part_data
     #
 #
