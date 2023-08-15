@@ -1967,7 +1967,7 @@ class SPART_obj(object):
             
         return ngpus
 #
-class SH_PART_obj(SPART_obj):
+class SH_PART_obj():
     # turns out that spart is not compatible with the new version(s) of SLURM.
     #. Kilian had to rewrite spart --> sh_part, and so shal we...
     #  So hopefully, we can limit this modification to __init__(), get_(sh/s)part_data(), and
@@ -1978,10 +1978,28 @@ class SH_PART_obj(SPART_obj):
         self.SP = self.get_data(sh_part_str=sh_part_str)
         #
         self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
-    
+    #
+    @property
+    def cols(self):
+        return self.SP.columns
+    #
     def get_spart_data(self, *args, **kwargs):
         print('*** DEPRICATION: get_spart_data() removed from this class version.')
         return None
+    #
+    def get_total_cpus(self, partitions='normal'):
+        if isinstance(partitions, str):
+            partitions = partitions.split(',')
+        return numpy.sum(self.SP['cpu_cores_total'][partitions].to_numpy())
+    def get_total_gpus(self, partitions='normal'):
+        if isinstance(partitions, str):
+            partitions = partitions.split(',')
+        return numpy.sum(self.SP['gpus_total'][partitions].to_numpy().astype(int))
+    def get_total(self, col='cpu_cores_total', partitions='normal'):
+        if isinstance(partitions, str):
+            partitions = partitions.split(',')
+            # .astype(float)
+        return numpy.sum(self.SP[col][partitions].to_numpy())
     #
     def get_data(self, sh_part_str):
         '''
@@ -2009,12 +2027,13 @@ class SH_PART_obj(SPART_obj):
         #
         self.sh_part_output = sh_part_output
         #
-        col_categories = [s.strip().lower().replace('*','') for s in sh_part_output[0].split('|') if not s.strip()=='']
-        col_groups     = [[s.strip().lower().replace('*','') for s in x.split()] for x in sh_part_output[1].split('|') if not x.strip()=='']
+        # Columns are built up wtih a littl hierarchy and human readability in mind:
+        col_categories = [s.strip().lower() for s in sh_part_output[0].split('|') if not s.strip()=='']
+        col_groups     = [[s.strip().lower() for s in x.split()] for x in sh_part_output[1].split('|') if not x.strip()=='']
         #
         columns = [f'{s1}_{s2}'.strip().replace(' ', '_') for s1,S in zip(col_categories, col_groups) for s2 in S]
         col_index = {k:cl for k,cl in enumerate(columns)}
-        self.columns = columns
+        #self.columns = columns
         del col_categories
         del col_groups
         #
@@ -2024,26 +2043,28 @@ class SH_PART_obj(SPART_obj):
         # we'll need to split the per-node fields, eg: per-node_cores_min, per-node_cores_min.
         #
         #sh_part_data = [rw.lower().replace('|','').split() for rw in sh_part_output[2:] if not (rw.startswith('----') or len(rw.strip())==0)]
-        sh_part_data = [[col_f_dict.get(col_index[k], str)(x) for k,x in enumerate(rw.lower().replace('|','').split())] for rw in sh_part_output[2:] if not (rw.startswith('----') or len(rw.strip())==0)]
+        sh_part_data = [[col_f_dict.get(col_index[k], str)(x) for k,x in enumerate(rw.lower().replace('|','').replace('*', '').split())] for rw in sh_part_output[2:] if not (rw.startswith('----') or len(rw.strip())==0)]
         #
+        # If we want to use a numpy structured array, we have to do this (see below).
+        #. unfortunately, this is one of those times that PANDAS works quite well, what with having
+        #. built in column and row indices...
         # constructr dtype:
         # is there a less stupid way to do this??? I swear there is...
-        shp_dtype = []
-        for k, (x,cl) in enumerate(zip(sh_part_data[0], columns)):
-            if isinstance(x,bytes) or isinstance(x,str):
-                # I think we can use 'S{n}' for both of these?
-                shp_dtype += [tuple([cl, f'S{max([len(rw[k]) for rw in sh_part_data])}'])]
-            elif isinstance(x,int):
-                shp_dtype += [tuple([cl, 'i8'])]
-            elif isinstance(x,float):
-                shp_dtype += [tuple([cl, 'f8'])]
-            else:
-                shp_dtype += [tuple([cl, 'S8'])]
-            #
-        print('** DEBUG: ', shp_dtype)
-        #
-        return sh_part_data
-    #
+#         shp_dtype = []
+#         for k, (x,cl) in enumerate(zip(sh_part_data[0], columns)):
+#             if isinstance(x,bytes) or isinstance(x,str):
+#                 # I think we can use 'S{n}' for both of these?
+#                 shp_dtype += [tuple([cl, f'S{max([len(rw[k]) for rw in sh_part_data])}'])]
+#             elif isinstance(x,int):
+#                 shp_dtype += [tuple([cl, 'i8'])]
+#             elif isinstance(x,float):
+#                 shp_dtype += [tuple([cl, 'f8'])]
+#             else:
+#                 shp_dtype += [tuple([cl, 'S8'])]
+#         #
+#         return numpy.array([tuple(rw) for rw in sh_part_data], dtype=shp_dtype)
+    
+        return pandas.DataFrame(data=sh_part_data, columns=columns, index=[rw[0] for rw in sh_part_data])
 #
 # TODO: reports should be (may have already been?) moved to hpc_reports
 class SACCT_groups_analyzer_report(object):
