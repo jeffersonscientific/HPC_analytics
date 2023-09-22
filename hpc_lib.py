@@ -19,7 +19,7 @@ import h5py
 import subprocess
 import shlex
 #
-import numba
+#import numba
 import pandas
 #
 # TODO: so... do we keep our plotting routines separate, or do we just make sure we use... uhh? (double check this)
@@ -39,10 +39,13 @@ dt_mpd_epoch = 719163.0
 #
 # TODO: move group_ids, and local-specific things like that to site-specific  modules or data files.
 #
-mazama_groups_ids = ['tgp', 'sep', 'clab', 'beroza', 'lnt', 'ds', 'nsd', 'oxyvibtest', 'cardamom', 'crustal', 'stress', 'das', 'ess', 'astro', 'seaf', 'oneill', 'modules', 'wheel', 'ds2', 'shanna', 'issm', 'fs-uq-zechner', 'esitstaff', 'itstaff', 'sac-eess164', 'sac-lab', 'sac-lambin', 'sac-lobell', 'fs-bpsm', 'fs-scarp1', 'fs-erd', 'fs-sedtanks', 'fs-sedtanks-ro', 'fs-supria', 'web-rg-dekaslab', 'fs-cdfm', 'suprib', 'cees', 'suckale', 'schroeder', 'thomas', 'ere', 'smart_fields', 'temp', 'mayotte-collab']
+# GIT NOTE: Mazama is gone; no need for mazama_groups_ids
 #
 # TODO: LOTS more serc_user ids!
-serc_user_ids = ['biondo', 'beroza', 'sklemp', 'harrisgp', 'gorelick', 'edunham', 'sagraham', 'omramom', 'aditis2', 'oneillm', 'jcaers', 'mukerji', 'glucia', 'tchelepi', 'lou', 'segall', 'horne', 'leift']
+# Generally, I think we don't use these any longer. We get these natively from the data.
+#serc_user_ids = ['biondo', 'beroza', 'sklemp', 'harrisgp', 'gorelick', 'edunham', 'sagraham', 'omramom', 'aditis2', 'oneillm', 'jcaers', 'mukerji', 'glucia', 'tchelepi', 'lou', 'segall', 'horne', 'leift']
+
+# These are used for some reporting code, that should be moved
 user_exclusions = ['myoder96', 'dennis']
 group_exclusions = ['modules']
 #
@@ -1706,6 +1709,11 @@ class SQUEUE_obj(object):
         #  will overried other inputs.
         #
         # TODO: add ***kwargs and handle syantax like SQU_{something} to add to squeue_fields, etc.
+        #
+        # TODO: use sinfo or SH_PART to get total resources (cpus, gpus) for partition=
+        SP = SH_PART_obj()
+        total_cpus = SP.get_total_cpus(partitions=partition)
+        total_gpus = SP.get_total_gpus(partitions=partition)
         
         if format_fields_dict is None:
             format_fields_dict = default_SLURM_types_dict
@@ -1812,8 +1820,10 @@ class SQUEUE_obj(object):
         if do_jobs:
             return n_jobs
     #
-    def simple_wait_estimate(self, ncpus=1, max_cpus=4600, do_refresh=False):
-        # TODO: figure out the right way(s) to get max_cpus from system.
+    def simple_wait_estimate(self, ncpus=1, max_cpus=None, do_refresh=False):
+        # 
+        max_cpus = max_cpus or self.total_cpus
+        #
         active_cpus = self.get_active_cpus(state='running,pending', do_refresh=do_refresh)
         avail_cpus = max_cpus - active_cpus
         #
@@ -1827,9 +1837,10 @@ class SQUEUE_obj(object):
         #
         return None
     #
-    def report_user_cpu_job_pies(self, state='RUNNING,PENDING', cpus_total=5456, add_idle=True, ax1=None, ax2=None):
+    def report_user_cpu_job_pies(self, state='RUNNING,PENDING', cpus_total=None, add_idle=True, ax1=None, ax2=None):
         #
         # TODO: use scontrol or sinfo to get an automagical cpus_total count.
+        cpus_total = cpus_total or self.total_cpus
         #
         user_data = self.get_user_cpu_job_data(state=state, add_idle=add_idle)
         #
@@ -1848,8 +1859,10 @@ class SQUEUE_obj(object):
         
         return user_data
     #
-    def get_user_cpu_job_data(self, state='RUNNING,PENDING', cpus_total=5456, add_idle=True):
+    def get_user_cpu_job_data(self, state='RUNNING,PENDING', cpus_total=None, add_idle=True):
         #partition = partition or self.partition
+        cpus_total = cpus_total or self.total_cpus
+        #
         if isinstance(state,bytes):
             state=state.decode()
         if isinstance(state,str):
@@ -1995,11 +2008,17 @@ class SH_PART_obj():
         if isinstance(partitions, str):
             partitions = partitions.split(',')
         return numpy.sum(self.SP['gpus_total'][partitions].to_numpy().astype(int))
+    #
     def get_total(self, col='cpu_cores_total', partitions='normal'):
         if isinstance(partitions, str):
             partitions = partitions.split(',')
             # .astype(float)
         return numpy.sum(self.SP[col][partitions].to_numpy())
+    #
+    def get_col_to_dict(self, col='cpu_cores_total', partitions='normal'):
+        if isinstance(partitions, str):
+            partitions = partitions.split(',')
+        return {p:v for (p,v) in zip(partitions, self.SP[col][partitions].to_numpy())}
     #
     def get_data(self, sh_part_str):
         '''
@@ -2686,7 +2705,7 @@ def time_bin_aggregates(XY, bin_mod=24, qs=numpy.array([.25, .5, .75])):
                                          [('q_{}'.format(q), '>f8') for q in qs])
 #
 # helper functions:
-@numba.jit
+#@numba.jit
 def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={}):
     # use this with MPP processing:
     # ... but TODO: it looks like in the Class() scope, this is 1) inefficient and 2) breaks with large data inputs because I think it pickles the entire
@@ -2701,7 +2720,7 @@ def process_sacct_row(rw, delim='\t', headers=None, types_dict={}, RH={}):
     return [None if vl=='' else types_dict.get(col,str)(vl)
                 for k,(col,vl) in enumerate(zip(headers, rws[:-1]))] + [rws[RH['JobID']].split('.')[0]]
 #
-@numba.jit
+#@numba.jit
 def get_modulus_stats(X,Y, a_mult=1., a_mod=1., qs=numpy.array([.5, .75, .95])):
     '''
     # NOTE: in retrospect, this simple script has its moments of usefulness, but a lot of these cases still need
