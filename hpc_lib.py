@@ -1787,11 +1787,12 @@ class SQUEUE_obj(object):
                                    columns=cols).to_records()
     #
     def get_active_jobs(self, *args, **kwargs):
+        # TODO: get some notes, comments, and function description in here. What is this for???
         # print('** DEBUG: args: {}'.format(args))
         if len(args)>=6:
             args[5]
         kwargs['do_jobs'] = True
-        return get_active_cpus(*args, **kwargs)
+        return self.get_active_cpus(*args, **kwargs)
     #
     def get_active_cpus(self, state='running,pending', do_refresh=False, state_data=None, ncpus=None, do_cpus=True, do_jobs=False):
         if do_refresh:
