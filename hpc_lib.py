@@ -180,12 +180,11 @@ default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':
         'Timelimit':elapsed_time_2_day,
             'Start':dtm_handler_default, 'End':dtm_handler_default, 'Submit':dtm_handler_default,
                     'Eligible':dtm_handler_default,
-                'Elapsed':elapsed_time_2_day, 'MaxRSS':kmg_to_num, 'AveRSS':kmg_to_num,
+                'Elapsed':elapsed_time_2_day, 'MaxRSS':kmg_to_num, 'AveRSS':kmg_to_num, 'ReqMem':kmg_to_num,
                 'MaxVMSize':kmg_to_num,'AveVMSize':kmg_to_num,  'NNodes':int, 'NCPUS':int,
                  'MinCPU':str, 'SystemCPU':elapsed_time_2_day, 'UserCPU':elapsed_time_2_day, 'TotalCPU':elapsed_time_2_day,
                 'NTasks':int,'MaxDiskWrite':kmg_to_num, 'AveDiskWrite':kmg_to_num,
-                    'MaxDiskRead':kmg_to_num, 'AveDiskRead':kmg_to_num,
-                    'ReqMem': kmg_to_num
+                    'MaxDiskRead':kmg_to_num, 'AveDiskRead':kmg_to_num
                 }
 #
 # yoder, 2022-08-11: updating default_SLURM_types_dict, mostly to facilitate SQUEUE calls. separating it out
