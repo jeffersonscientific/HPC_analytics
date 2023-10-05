@@ -827,6 +827,246 @@ class SACCT_data_handler(object):
     #def get_cpu_hours_layer_cake_depricated(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
 #                              t_min=None, t_max=None, verbose=0):
     #
+    
+    ####
+    # GPU Layer Cake Functions
+    #####################
+    def report_activegpus_layercake_and_CDFs(self, group_by='Group', agpu_layer_cake=None, jobs_summary=None, ave_len_days=5., qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+        '''
+        #  Inputs:
+        #   @group_by: column name for grouping
+        #   @agpu_jobs: optional input of gpuh_jobs
+        #   @bin_size: bins size of timeseries.
+        #   @fg: (optional) figure for plots. Should have 4 subplots. if not provided a default will be created.
+        #   @ax1,2,3,4: Optional. if not provided will be created and/or drawn from fg.
+        #   @ave_len_days: smoothing/averaging interval, in days.
+        #   #qs: list/array-like of quantile thresholds.
+        '''
+        qs = numpy.array(qs)
+        #bin_size = bin_size or .1
+        if fg is None:
+            fg = plt.figure(figsize=(20,8))
+            for k in range(1,3):
+                fg.add_subplot(1,2,k)
+        #
+        # NOTE: this might break if (fg is None), even if ax1,2,3,4 are provided)
+        #ax1, ax2, ax3, ax4 = fg.get_axes()
+        ax1 = ax1 or fg.get_axes()[0]
+        ax3 = ax3 or fg.get_axes()[1]
+        #
+        ax1.grid()
+        ax3.grid()
+        #
+        ax1.set_title('Active GPUs', size=16)
+        ax3.set_title('Active GPUs, CDF', size=16)
+        #
+        if agpu_layer_cake is None:
+            agpu_layer_cake = self.get_active_gpus_layer_cake(layer_field=group_by, n_points=n_points, bin_size=bin_size, jobs_summary=jobs_summary)
+        #
+        #cpus = acpu_layer_cake['N_cpu']
+        #jobs = acpu_layer_cake['N_jobs']
+        T = agpu_layer_cake['N_gpu']['time']
+        #
+        lc_ngpu = plot_layer_cake(data=agpu_layer_cake['N_gpu'], ax=ax1)
+        #lc_njobs = plot_layer_cake(data=acpu_layer_cake['N_jobs'], ax=ax2)
+        #
+        # get an averaging length (number of TS elements) of about ave_len_days
+        ave_len = int(numpy.ceil(ave_len_days*len(T)/(T[-1] - T[0])))
+        z_gpu = ax1.get_lines()[-1].get_ydata()
+        #z_jobs = ax2.get_lines()[-1].get_ydata()
+        z_gpus_smooth = running_mean(z_gpu, ave_len)
+        #z_jobs_smooth = running_mean(z_jobs, ave_len)
+        #
+        ax1.plot(T[-len(z_gpus_smooth):], z_gpus_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
+        #ax2.plot(T[-len(z_jobs_smooth):], z_jobs_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
+        #
+        qs_gpus = numpy.quantile(z_gpu, qs)
+        #qs_jobs = numpy.quantile(z_jobs, qs)
+        #
+        hh_gpus = ax3.hist(z_gpu, bins=100, cumulative=True, density=True, histtype='step', lw=3.)
+        for x,y in zip(qs_gpus, qs):
+            #ax3.plot([0., qs_cpus[-1], qs_cpus[-1]], [qs[-1], qs[-1], 0.], ls='--', color='r', lw=2. )
+            ax3.plot([0., x, x], [y, y, 0.], ls='--', lw=2., label=f'{y*100.}th %: {x:.0f} gpus' )
+        #
+        #hh_jobs = ax4.hist(z_jobs, bins=100, cumulative=True, density=True, histtype='step', lw=3.)
+        #for x,y in zip(qs_jobs, qs):
+            #ax3.plot([0., qs_cpus[-1], qs_cpus[-1]], [qs[-1], qs[-1], 0.], ls='--', color='r', lw=2. )
+            #ax4.plot([0., x, x], [y, y, 0.], ls='--', lw=3., label=f'{y*100.}th %: {x:.0f} jobs' )
+        #
+        for ax in (ax1, ax3):
+            ax.legend(loc=0)
+        #
+        return fg
+    
+    def get_active_gpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NGPUs=None):
+    # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
+        if jobs_summary is None:
+            jobs_summary = self.jobs_summary
+        if NGPUs is None or NGPUs=='':
+            NGPUs = jobs_summary['NGPUs']
+        #
+        if t_now is None:
+            t_now = mpd.date2num(dtm.datetime.now() )
+        if t_min is None:
+            t_min = numpy.nanmin([jobs_summary['Start'], jobs_summary['End']])
+            #t_min = numpy.nanmin( [t_now, t_min] )
+        #
+        if t_max is None:
+            t_max = numpy.nanmax([jobs_summary['Start'], jobs_summary['End']])
+            print(f'*** DEBUG t_now: {t_now}, t_max: {t_max}')
+            t_max = numpy.nanmin([t_now, t_max])
+        #
+        if layers is None:
+            layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
+        layers = {ky:{} for ky in layers}
+        if verbose:
+            print('*** ', layers)
+        #
+        dtype_gpuh = [(s, '>f8') for s in ['time'] + list(layers.keys())]
+        dtype_jobs = dtype_gpuh
+        #
+        for j, ky in enumerate(layers.keys()):
+            # TODO: better to handle b'' vs '' via ix.astype(str), or similar approach.
+            ix = jobs_summary[layer_field] == (ky.encode() if hasattr(jobs_summary[layer_field][0], 'decode') else ky)
+            XX = self.active_jobs_gpu(n_points=n_points, bin_size=bin_size, t_min=t_min, t_max=t_max, t_now=t_now, n_cpu=n_cpu,
+                                     jobs_summary=jobs_summary[ix], verbose=verbose, mpp_chunksize=mpp_chunksize, nan_to=nan_to,
+                                     NGPUs=NGPUs[ix])
+            #
+            if verbose:
+                print('*** DEBUG: {}:: {}'.format(j, len(XX['N_gpu'])))
+                #print(f'*** DEBUG: {k}:: {len(XX['N_cpu'])}')
+            #
+            # create output_ arrays for j==0 (or equivalently output_cpus and output_jobs do not exist...)
+            if j==0:
+                output_gpus = numpy.empty( (len(XX['N_gpu']), ), dtype=dtype_gpuh )
+                output_jobs = numpy.empty( (len(XX['N_jobs']), ), dtype=dtype_jobs )
+            #
+            output_gpus[ky] = XX['N_gpu'][:]
+            output_jobs[ky] = XX['N_jobs'][:]
+        #
+        output_gpus['time'] = XX['time']
+        output_jobs['time'] = XX['time']
+        #
+        return {'N_gpu': output_gpus, 'N_jobs': output_jobs}
+    
+    
+    def active_jobs_gpu(self,n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0., NGPUs=None):
+        '''
+        # TODO: Facilitate GPU computation...
+        #  We could just add a GPUs column to this, but I think a more elegant solution is to add NCPUS
+        #  as an optional parameter. Default behavior will be to get it from jobs_sumamry (current behavior);
+        #  alternatively, an array like NGPUs can be provided.
+        #
+        # Since this is now procedural, let's phase out ix?. the class-resident version can keep it if so desired.
+        # NOTE on parallelization: There is quite a bit of pre-processing front-matter, so it makes sense to separate the SPP and MPP, as opposed
+        #  to doing a recursive callback. Basically, we put in a fair bit of work to construct our working data; it would be expensive to do it again,
+        #  messy to integrate it into the call signature, etc. In other words, if you're adding a lot of inputs and input handling to accomodate MPP,
+        #  it's probably better to just outsource it. See MPP section below.
+        #
+        # TODO: assess parallel strategy; maybe adjust chunksize to avoid too-big-to-parallel problems.
+        # @n_points: number of points in returned time series.
+        # @bin_size: size of bins. This will override n_points
+        # @t_min: start time (aka, bin phase).
+        # @ix: an index, aka user=my_user
+        # NOTE: see @mpp_chunksize below: speed performance was a big problem on Mazama, probably because it was IO limited? Not
+        #   seeing the same problem(s) on Sherlock, so some of these more desperate discussions of performance optimization can probably
+        #   be ignored.
+        # @mpp_chunksize: batch size for MPP, in this case probably an apply_async(). Note that this has a significant affect on speed and parallelization
+        #  performance, and optimal performance is probably related to maximal use of cache. For example, for moderate size data sets, the SPP speed might be ~20 sec,
+        #  and the 2cpu, chunk_size=20000 might be 2 sec, then 1.5, 1.2, for 3,4 cores. toying with the chunk_size parameter suggests that cache size is the thing. It is
+        #  probably worth circling back to see if map_async() can be made to work, since it probably has algorithms to estimate optimal chunk_size.
+        # @nan_to={val} set nan values to {val}. If None, skip this step. Default is 0.
+        # @NCPUs=None : vector of NCPU values. Default will be to use jobs_summary['NCPUS'], or we can provide -- for
+        #  examle, a vector of NGPUs.
+        '''
+    #
+    # TODO: modify this to allow a d_t designation, instead of n_points, so we can specify -- for example, an hourly sequence.
+    # DEBUG: for now, just set n_cpu=1. we should be able to run this and fix the mpp later...
+    #n_cpu=1
+    #
+        if NGPUs is None:
+            NGPUs = jobs_summary['NGPUS']
+        #
+        # empty container:
+        null_return = lambda: numpy.array([], dtype=[('time', '>f8'),('N_jobs', '>f8'),('N_cpu', '>f8')])
+        if verbose is None:
+            verbose = 0
+        #
+        mpp_chunksize = mpp_chunksize or 1000
+        n_cpu = n_cpu or 1
+        #
+        if jobs_summary is None or len(jobs_summary) == 0:
+            return null_return()
+        #
+        if t_now is None:
+            t_now = numpy.max([jobs_summary['Start'], jobs_summary['End']])
+        #
+        t_start = jobs_summary['Start']
+        t_end = jobs_summary['End']
+        t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+        #
+        #print('** DEBUG: ', t_end.shape, t_start.shape)
+        #
+        if t_min is None:
+            t_min = numpy.nanmin([t_start, t_end])
+        #
+        if verbose:
+            print('** DEBUG: shapes:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
+        #
+        if len(t_start)==1 and verbose:
+            print('** ** **: t_start, t_end: ', t_start, t_end)
+        #
+        # catch an empty set:
+        # OR or AND condition???
+        if len(t_start)==0 or len(t_end)==0:
+            print('Exception: no data:: {}, {}'.format(numpy.shape(t_start), numpy.shape(t_end)))
+            return null_return()
+        #
+        if t_max is None:
+            t_max = numpy.nanmax([t_start, t_end])
+        #
+        if not (bin_size is None or t_min is None or t_max is None):
+            n_points = int(numpy.ceil(t_max-t_min)/bin_size)
+        if verbose:
+            print(f'*** DEBUG: {n_points}, {bin_size}')
+        output = numpy.zeros( n_points, dtype=[('time', '>f8'),
+                    ('N_jobs', '>f8'),
+                    ('N_gpu', '>f8')])
+        #output['time'] = numpy.linspace(t_min, t_max - (t_max - t_min)/n_points, n_points)
+        output['time'] = numpy.linspace(t_min, t_max, n_points)
+        #
+        if n_cpu==1:
+            output['N_jobs'], output['N_gpu'] = process_ajc_rows(t=output['time'], t_start=t_start, t_end=t_end, NCPUs=NGPUs)
+            #
+            if not nan_to is None:
+                output['N_jobs'][numpy.isnan(output['N_jobs'])] = 0.
+                output['N_gpu'][numpy.isnan(output['N_gpu'])]   = 0.
+            #
+            return output
+            #
+        else:
+
+            n_procs = min(numpy.ceil(len(t_start)/n_cpu).astype(int), numpy.ceil(len(t_start)/mpp_chunksize).astype(int) )
+            ks_r = numpy.linspace(0, len(t_start), n_procs+1).astype(int)
+            #
+            # NOTE: use smaller of n_cpu, n_procs actual processing units.
+            with mpp.Pool( min(n_cpu, n_procs) ) as P:
+                results = [P.apply_async(process_ajc_rows,  kwds={'t':output['time'], 't_start':t_start[k1:k2],
+                            't_end':t_end[k1:k2], 'NCPUs':NGPUs[k1:k2]} ) for k1, k2 in zip(ks_r[:-1], ks_r[1:])]
+                #
+                R = [r.get() for r in results]
+
+            for k_r, (r_nj, r_ncpu) in enumerate(R):
+
+                if verbose:
+                    print('*** DEBUG: shape(output)={}, shape(r_nj)={}, shape(r_ncpu):{}'.format(numpy.shape(output), numpy.shape(r_nj), numpy.shape(r_ngpu)))
+                output['N_jobs'] += numpy.array(r_nj)
+                output['N_gpu']  += numpy.array(r_ngpu)
+            #
+            del P, R, results
+            #
+        return output
+    ###################
     def export_primary_data(self, output_path='data/SACCT_full_data.csv', delim='\t'):
         # DEPRICATION: This does not appear to work very well, and we have HDF5 options, so consider this depricated
         #  and maybe remove it going forward.
