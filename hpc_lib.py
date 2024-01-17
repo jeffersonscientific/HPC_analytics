@@ -22,6 +22,11 @@ import shlex
 #import numba
 import pandas
 #
+# 2023-12-11 yoder:
+# TODO: add class sinfo_nodes() (or something like it...), based on this query:
+# sinfo --Node --partition=serc --Format=nodelist,nodeaddr,available,cpus,cpusstate,memory,gres,gresused:35,statecomplete,time
+# We can use this to do a deeper drill-down to estimate available resources.
+#
 # TODO: so... do we keep our plotting routines separate, or do we just make sure we use... uhh? (double check this)
 # matplotlib.use('Agg')
 #. load this first, so on an HPC primary 
