@@ -3911,18 +3911,50 @@ def fg_time_labels_to_dates(ax, dt_epoch=None):
     #
     return lbls
 
+# yoder:
+#. want a more versatile and multi-purpose SINFO class tool. Made the mistake of hard-coding the initial-purpose
+#. (albeit short...) Format list with [NodeHost, Memory, AllocMem]. No real harm just leaving those, for backward
+#. compatibility, but it might be better to just build a new, more specific class case, like:
+# class SINFO_NODES_obj(object):
+# And really, there is a bit more custom purpose written into SINFO_obj() than I really want to work around, so...
+#. (and I'm just going to copy-paste repeated code, rather than inherit). There's not a lot of it, and this will end up
+#. being a more generalized, versatile class.
+class SINFO_NODES_obj(object):
+    def __init__(self, partition='serc', format_fields_dict=None, sinfo_prams=None, Format_fields=None, verbose=False):
+        '''
+        # notes...
+        '''
+        #
+        # TODO: add **kwargs syntax like pram_{name} --> sinfo_prams, fmt_{name} --> Format
+        if format_fields_dict is None:
+            format_fields_dict = default_SLURM_types_dict
+        #
+        sinfo_prams = (sinfo_prams or {})
+        sinfo_prams['Nodes']=''
+        #
+        if not (partition is None or partition==''):
+            sinfo_prams['partition'] = partition
+        #
+        # Note: "or" syntax might not work here...
+        Format_fields=numpy.unique(numpy.append(['nodehost'], (format_fields or [])))
+        #
+            
 
+        
+
+        
 class SINFO_obj(object):
     # SINFO Object.  This object will obtain and parse data from sinfo
     # The initial need for this object is to get total memory for a cluster
     #           Which is not available from squeue or sacct
-    def __init__(self, partition='serc', format_fields_dict=None, sinfo_prams=None, verbose=False):
+    def __init__(self, partition='serc', format_fields_dict=None, sinfo_prams=None, Format_fields=None, verbose=False, do_sinfo=True):
         #
         # @sinfo_prams: additional or replacement fields for squeue_fields variable, eg parameters
         #. to pass to squeue. Presently, --Format and --partition are specified. some options might also
         #. be allowed as regular inputs. Probably .update(squeue_prams) will be the last thing done, so
         #  will overried other inputs.
         #
+        # TODO: add sinfo_parms handler options: {pram:val, ...}, ["--opt=val", "--opt"], "--opt-val --opt"
         
         if format_fields_dict is None:
             format_fields_dict = default_SLURM_types_dict
@@ -3935,53 +3967,85 @@ class SINFO_obj(object):
 #             del ff_l
 #             del ff_u
         #
-        sinfo_fields = {'--Format': ['NodeHost','Memory','AllocMem'],
+        # ugh... should not have hard-coded this list -- even a short one. But just doing this should
+        #. get us what we need. This will patch back to provide backwards compatibility.
+        if Format_fields is None:
+            Format_fields = ['NodeHost','Memory','AllocMem']
+        #
+        sinfo_fields = {'--Format': Format_fields,
                       '--partition': [partition]
                       }
         if isinstance(sinfo_prams, dict):
             sinfo_fields.update(sinfo_prams)
         #
-        sinfo_delim=';'
+        # QUESTION: When do we see a ";" delimiter? this would imply {ky};{vl}. this must be for --Format=
+        #.  which maybe can be "," or ";"  (???). Let's just see how it goes...
+        #sinfo_delim=';'
+        sinfo_delim='None'
         sinfo_str = 'sinfo '
         for ky,vl in sinfo_fields.items():
             delim=' '
             if ky.startswith('--'):
                 # long format
                 delim='='
+            if vl == '' or vl is None:
+                delim=''
             #
-            sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, f':{sinfo_delim},'.join(vl))
+            sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, ','.join(vl))
         #
         if verbose:
             print('*** sinfo_str: {}'.format(sinfo_str))
             print('*** sinfo_ary: {}'.format(sinfo_str.split()))
+            print('*** sinfo.sinfo_fields:{}'.format(sinfo_fields))
    
         self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
-        self.set_sinfo_data()
+        #
+        if do_sinfo:
+            self.set_sinfo_data()
+        else:
+            print(f'** SINFO_str: {sinfo_str}')
 
     def set_sinfo_data(self):
         self.sinfo_data = self.get_sinfo_data()
         self.dtype       = self.sinfo_data.dtype
         
-    def get_sinfo_data(self, sinfo_str=None, sinfo_delim=None, verbose=False):
-        sinfo_str = sinfo_str or self.sinfo_str
+    def get_sinfo_data(self, sinfo_delim=None, verbose=None):
+        # , sinfo_str=None, sinfo_delim=None
+        #sinfo_str = sinfo_str or self.sinfo_str
+        verbose = verbose or self.verbose
         sinfo_delim = sinfo_delim or self.sinfo_delim
+        sinfo_str = self.sinfo_str
+        sinfo_delim=None
         #
         print(f'** sinfo: {sinfo_str}' )
         sinfo_output = subprocess.run(sinfo_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         #cols = squeue_output[0].split(squeue_delim)
+        
         #
         # there is a smarter way to do this, eg:
         cols = sinfo_output[0].split(sinfo_delim)
+        #cols = sinfo_output[0].split()
         for k,cl in enumerate(cols):
             cl_0 = cl
             k_rep = 0
             while cols[k] in cols[0:k]:
                 cols[k] = f'{cl}_{k_rep}'
         if verbose:
+            print('*** sinfo_output: ')
+            for k,rw in enumerate(sinfo_output):
+                print(f'** [{k}] {rw}')
+                if k>5:
+                    break
+            #
             print('** cols: ', cols)
+            #
+            print('*** ***: --Format: ', self.sinfo_fields['--Format'])
         #
         return pandas.DataFrame(data=[[self.format_fields_dict.get(cl.lower(),str)(x)
                                   for x, cl in zip(rw.split(sinfo_delim),
                                 self.sinfo_fields['--Format']) ]
                                  for rw in sinfo_output[1:] if not len(rw.strip()) == 0],
                                    columns=cols).to_records()
+    
+    
+    
