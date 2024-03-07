@@ -3940,37 +3940,39 @@ class SINFO_NODES_obj(object):
         #
             
 
-        
-
-        
 class SINFO_obj(object):
     # SINFO Object.  This object will obtain and parse data from sinfo
     # The initial need for this object is to get total memory for a cluster
     #           Which is not available from squeue or sacct
+    node_states = {}
+    format_fields_node = ['nodelist','nodehost','nodes','partition','cpus','memory','statecompact','statelong',\
+               'available','gres','features']
+    format_fields_mem = ['NodeHost','Memory','AllocMem']
     def __init__(self, partition='serc', format_fields_dict=None, sinfo_prams=None, Format_fields=None, verbose=False, do_sinfo=True):
+        '''
+        # @format_fields_dict: data-type translaton dict, eg: {'NCPUS': int, ...}
         #
         # @sinfo_prams: additional or replacement fields for squeue_fields variable, eg parameters
         #. to pass to squeue. Presently, --Format and --partition are specified. some options might also
         #. be allowed as regular inputs. Probably .update(squeue_prams) will be the last thing done, so
         #  will overried other inputs.
         #
+        # @Format_fields: field names, direct from/to --Format= option
+        '''
+        # TODO: Extract GPUs from GRES, then add simple GPUs column.
         # TODO: add sinfo_parms handler options: {pram:val, ...}, ["--opt=val", "--opt"], "--opt-val --opt"
-        
+        #
+        # format fields translation dictionary. Currently borrowing from SACCT dict; might need to build a new one.
         if format_fields_dict is None:
             format_fields_dict = default_SLURM_types_dict
-#             format_fields.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus']})
-#             #
-#             ff_l = {ky.lower():val for ky,val in format_fields.items()}
-#             ff_u = {ky.upper():val for ky,val in format_fields.items()}
-#             format_fields.update(ff_l)
-#             format_fields.update(ff_u)
-#             del ff_l
-#             del ff_u
         #
         # ugh... should not have hard-coded this list -- even a short one. But just doing this should
         #. get us what we need. This will patch back to provide backwards compatibility.
-        if Format_fields is None:
-            Format_fields = ['NodeHost','Memory','AllocMem']
+        if Format_fields is None or Format_fields.lower() in ('mem', 'memory'):
+            #Format_fields = ['NodeHost','Memory','AllocMem']
+            Format_fields = self.format_fields_mem
+        if Format_fields.lower() in ('node', 'nodes'):
+            Format_fields = self.format_fields_node
         #
         sinfo_fields = {'--Format': Format_fields,
                       '--partition': [partition]
@@ -4012,6 +4014,8 @@ class SINFO_obj(object):
     def get_sinfo_data(self, sinfo_delim=None, verbose=None):
         # , sinfo_str=None, sinfo_delim=None
         #sinfo_str = sinfo_str or self.sinfo_str
+        #
+        # TODO: get gpus from ['GRES']; format is like, gpu:8(S:0-3)
         verbose = verbose or self.verbose
         sinfo_delim = sinfo_delim or self.sinfo_delim
         sinfo_str = self.sinfo_str
@@ -4046,6 +4050,45 @@ class SINFO_obj(object):
                                 self.sinfo_fields['--Format']) ]
                                  for rw in sinfo_output[1:] if not len(rw.strip()) == 0],
                                    columns=cols).to_records()
+    #
+    def get_cpu_totals(self, cpus_col=None, state_col=None):
+        #
+        if cpus_col is None:
+            cpus_col = self.sinfo_data['CPUS']
+        if state_col is None:
+            state_col = self.sinfo_data['STATE']
+        #
+        # python for-loop way:
+        #cpu_state_totals = {st:0 for st in numpy.unique(self.sinfo_data['STATE'])}
+        #for ncpus,st in self.sinfo_data[['CPUS', 'STATE']]:
+        #    cpu_state_totals[st] += int(ncpus)
+        #
+        #return cpu_state_totals
+        # or...
+        # numpy way:
+        #cpu_totals = {st:numpy.sum( (self.sinfo_data['CPUS'])[self.sinfo_data['STATE']==st]) for st in numpy.unique(self.sinfo_data['STATE'])}
+        return {st:numpy.sum( (cpus_col)[state_col==st]) for st in numpy.unique(state_col)}
+    #
+    @property
+    def cpu_totals(self):
+        return self.get_cpu_totals()
+    #
+    def get_available_cpus(self, cpus_col=None, state_col=None, gpus_col=None):
+        # TODO: initialize with GPU count; then separate GPU and CPU cpu counts.
+        #. we might also then handle the GPUs separately as an index.
+        if cpus_col is None:
+            cpus_col = self.sinfo_data['CPUS']
+        if state_col is None:
+            state_col = self.sinfo_data['STATE']
+        if gpus_col is None:
+            #gpus_col = numpy.array([('gpu' in gre) for gre in self.sinfo_data['GRES']])
+            gpus_col = self.sinfo_data['GRES']
+        #
+        # preliminary calc, without separating CPUs.
+        #avail_cpus = numpy.sum([ncpus for ncpus,st,gres in  self.sinfo_data[['CPUS', 'STATE', 'GRES']]
+        avail_cpus = numpy.sum([ncpus for ncpus,st,gres in  numpy.array([cpus_col, state_col, gpus_col]).T
+                        if not st[0:4] in ('down', 'drng') and not 'gpu' in gres])
+        return avail_cpus
     
     
     
