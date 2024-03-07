@@ -4,6 +4,7 @@ import os
 import sys
 import math
 import numpy
+import numpy.lib.recfunctions as nrf
 import scipy
 import scipy.constants
 #import matplotlib
@@ -195,7 +196,7 @@ default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':
 # yoder, 2022-08-11: updating default_SLURM_types_dict, mostly to facilitate SQUEUE calls. separating it out
 #   (rather than just directly add in the new cols) for posterity. also, adding .lower() and .upper() duplicate
 #   entries to simplify searching.
-default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus']})
+default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus', 'gpus', 'GPUS', 'MEMORY']})
 default_SLURM_types_dict.update({'TIMELEFT':elapsed_time_2_day, 'TIMEUSED':elapsed_time_2_day})
 dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict.items()}
 dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict.items()} )
@@ -4006,11 +4007,27 @@ class SINFO_obj(object):
             self.set_sinfo_data()
         else:
             print(f'** SINFO_str: {sinfo_str}')
-
+    #
+    # NOTE: I think we can also just do something like,
+    #. self.__getitem__ = self.sinfo_data.__getitem__
+    #  for some reason, I usually just write the passthrough.
+    def __getitem__(self, *args, **kwargs):
+        return self.sinfo_data.__getitem__(*args, **kwargs)
+    def __setitem__(self, *args, **kwargs):
+        return self.sinfo_data.__setitem__(*args, **kwargs)
+    def __iter__(self, *args, **kwargs):
+        return self.sinfo_data.iter(*args, **kwargs)
+    def __next__(self, *args, **kwargs):
+        return self.sinfo_data.next(*args, **kwargs)
+    #
     def set_sinfo_data(self):
-        self.sinfo_data = self.get_sinfo_data()
-        self.dtype       = self.sinfo_data.dtype
-        
+        #
+        sinfo_data = self.get_sinfo_data()
+        gpus = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']), dtype=[('GPUS', int)])
+        #
+        self.sinfo_data = nrf.merge_arrays( (sinfo_data, gpus), asrecarray=True, flatten=True)
+        self.dtype      = self.sinfo_data.dtype
+    #        
     def get_sinfo_data(self, sinfo_delim=None, verbose=None):
         # , sinfo_str=None, sinfo_delim=None
         #sinfo_str = sinfo_str or self.sinfo_str
@@ -4021,13 +4038,15 @@ class SINFO_obj(object):
         sinfo_str = self.sinfo_str
         sinfo_delim=None
         #
-        print(f'** sinfo: {sinfo_str}' )
+        if verbose:
+            print(f'** sinfo: {sinfo_str}' )
+        #
         sinfo_output = subprocess.run(sinfo_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         #cols = squeue_output[0].split(squeue_delim)
-        
         #
         # there is a smarter way to do this, eg:
         cols = sinfo_output[0].split(sinfo_delim)
+        #cols += 'gpus'
         #cols = sinfo_output[0].split()
         for k,cl in enumerate(cols):
             cl_0 = cl
@@ -4050,6 +4069,8 @@ class SINFO_obj(object):
                                 self.sinfo_fields['--Format']) ]
                                  for rw in sinfo_output[1:] if not len(rw.strip()) == 0],
                                    columns=cols).to_records()
+
+
     #
     def get_cpu_totals(self, cpus_col=None, state_col=None):
         #
@@ -4073,22 +4094,74 @@ class SINFO_obj(object):
     def cpu_totals(self):
         return self.get_cpu_totals()
     #
-    def get_available_cpus(self, cpus_col=None, state_col=None, gpus_col=None):
+    def get_available_cpus(self, cpus_col=None, state_col=None, gpus_col=None, gres_col=None):
         # TODO: initialize with GPU count; then separate GPU and CPU cpu counts.
         #. we might also then handle the GPUs separately as an index.
+        #
+        # if gres_col is provided and gpus_col is not, create gpus_col from it. 
+        #. note, behavior is that gpus_col overrides gres_col
+        if gres_col is not None and gpus_col is None:
+            gpus_col = self.get_gpus(gres_col=gres_col)
+        #
+        if cpus_col is None:
+            cpus_col = self.sinfo_data['CPUS']
+        if state_col is None:
+            state_col = self.sinfo_data['STATE']
+#         if gres_col is None:
+#             #gpus_col = numpy.array([('gpu' in gre) for gre in self.sinfo_data['GRES']])
+#             #gpus_col = self.sinfo_data['GRES']
+#             gres_col = self.sinfo_data['GRES']
+        if gpus_col is None:
+            gpus_col = self.sinfo_data['GPUS']
+        #
+#         avail_cpus = numpy.sum([ncpus for ncpus,st,gres in  numpy.array([cpus_col, state_col, gpus_col]).T
+#                         if not st[0:4] in ('down', 'drng') and not 'gpu' in gres])
+        avail_cpus = numpy.sum([ncpus for ncpus,st,ngpus in  numpy.array([cpus_col, state_col, gpus_col]).T
+                        if not (st[0:4] in ('down', 'drng') or ngpus>0)])
+
+        return avail_cpus
+    #
+    def get_available_gpus(self, cpus_col=None, state_col=None, gpus_col=None, gres_col=None, down_state=False):
+        # TODO: initialize with GPU count; then separate GPU and CPU cpu counts.
+        #. we might also then handle the GPUs separately as an index.
+        #
+        # if gres_col is provided and gpus_col is not, create gpus_col from it. 
+        #. note, behavior is that gpus_col overrides gres_col
+        if gres_col is not None and gpus_col is None:
+            gpus_col = self.get_gpus(gres_col=gres_col)
+        #
         if cpus_col is None:
             cpus_col = self.sinfo_data['CPUS']
         if state_col is None:
             state_col = self.sinfo_data['STATE']
         if gpus_col is None:
-            #gpus_col = numpy.array([('gpu' in gre) for gre in self.sinfo_data['GRES']])
-            gpus_col = self.sinfo_data['GRES']
+            gpus_col = self.sinfo_data['GPUS']
         #
-        # preliminary calc, without separating CPUs.
-        #avail_cpus = numpy.sum([ncpus for ncpus,st,gres in  self.sinfo_data[['CPUS', 'STATE', 'GRES']]
-        avail_cpus = numpy.sum([ncpus for ncpus,st,gres in  numpy.array([cpus_col, state_col, gpus_col]).T
-                        if not st[0:4] in ('down', 'drng') and not 'gpu' in gres])
+        ix = numpy.array([st[0:4] not in ('down', 'drng') and ng>0 for st,ng in numpy.array([state_col, gpus_col]).T])
+                #
+        if down_state:
+            ix = numpy.invert(ix)
+        
+        avail_cpus = {'gpus':numpy.sum(gpus_col[ix]), 'cpus':numpy.sum(cpus_col[ix])}
+        #
         return avail_cpus
+    #
+    def get_gpus_col(self, gres_col=None):
+        '''
+        # inputs:
+        # @gres_col: column of GRES data that will be parsed for GPU counts. Default is self.sinfo_data['GRES']
+        #
+        # parse gres_col to generate a column of GPU counts.
+        '''
+        # we might consider burning some non-optimal cycles and do this rigorously if the GRES format turns
+        #. out to be difficult in some instances.
+        if gres_col is None:
+            gres_col = self.sinfo_data['GRES']
+        #
+        # an optimized solution, that will probalby work most of the time is like:
+        return numpy.array([0 if not 'gpu' in s else int(s[ (s.index('gpu:')+4) : (s.index('(', s.index('gpu:')+4) ) ]) 
+                             for s in gres_col ])
+    #
     
     
     
