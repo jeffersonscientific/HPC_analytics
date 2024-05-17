@@ -720,7 +720,7 @@ class SACCT_data_handler(object):
         ix = self.jobs_summary['NCPUS']==n_cpu
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
     #
-    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None):
+    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None, verbose=False):
         # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
         if jobs_summary is None:
             jobs_summary = self.jobs_summary
@@ -735,14 +735,16 @@ class SACCT_data_handler(object):
         #
         if t_max is None:
             t_max = numpy.nanmax([jobs_summary['Start'], jobs_summary['End']])
-            print(f'*** DEBUG t_now: {t_now}, t_max: {t_max}')
+            if verbose:
+                print(f'*** DEBUG t_now: {t_now}, t_max: {t_max}')
             t_max = numpy.nanmin([t_now, t_max])
         #
         if layers is None:
             layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
         layers = {ky:{} for ky in layers}
         if verbose:
-            print('*** ', layers)
+            if verbose:
+                print('*** ', layers)
         #
         dtype_cpuh = [(s, '>f8') for s in ['time'] + list(layers.keys())]
         dtype_jobs = dtype_cpuh
@@ -1244,7 +1246,7 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
-    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., ave_N_layers=1, qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
         #  Inputs:
         #   @group_by: column name for grouping
@@ -1286,8 +1288,8 @@ class SACCT_data_handler(object):
         #jobs = acpu_layer_cake['N_jobs']
         T = acpu_layer_cake['N_cpu']['time']
         #
-        lc_ncpu = plot_layer_cake(data=acpu_layer_cake['N_cpu'], ax=ax1)
-        lc_njobs = plot_layer_cake(data=acpu_layer_cake['N_jobs'], ax=ax2)
+        lc_ncpu = plot_layer_cake(data=acpu_layer_cake['N_cpu'], ave_len=ave_N_layers, ax=ax1)
+        lc_njobs = plot_layer_cake(data=acpu_layer_cake['N_jobs'], ave_len=ave_N_layers, ax=ax2)
         #
         # get an averaging length (number of TS elements) of about ave_len_days
         ave_len = int(numpy.ceil(ave_len_days*len(T)/(T[-1] - T[0])))
@@ -3697,7 +3699,7 @@ def flatten(A):
         else: rt.append(i)
     return rt
 #
-def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
+def plot_layer_cake(data=None, layers=None, time_col='time', ave_len=1, ax=None):
     '''
     # general handler for layer cake plots. Assume data is like [[time, {data cols}]].
     # Question: qualify this geometrically (dtype.names[1:]) or by value
@@ -3720,13 +3722,16 @@ def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
             layers = [ky for ky in data.keys() if not ky == time_col]
         #
     #
-    T = data[time_col]
+    T = data[time_col][ave_len-1:]
     #
-    z = numpy.zeros(len(data))
+    z = numpy.zeros(len(data)-ave_len+1)
+    #
     for lyr in layers:
         # there are more efficient ways to do this, but this will be fine...
         z_prev = z.copy()
-        z += data[lyr]
+        #z += data[lyr]
+        z += running_mean(data[lyr], ave_len)
+        #print('** len(z): ', len(z))
         #
         ln, = ax.plot(T,z, ls='-', alpha=.8)
         clr = ln.get_color()
@@ -3946,9 +3951,13 @@ class SINFO_obj(object):
     # The initial need for this object is to get total memory for a cluster
     #           Which is not available from squeue or sacct
     node_states = {}
-    format_fields_node = ['nodelist','nodehost','nodes','partition','cpus','memory','statecompact','statelong',\
-               'available','gres','features']
+    format_fields_node = ['nodelist','nodehost','nodes','partition','cpus','memory','statecompact',\
+               'available','gres','features:100']
     format_fields_mem = ['NodeHost','Memory','AllocMem']
+    #
+    # Unavaiable states (ie, if it's in this state, it's not available). Note that a good practice is
+    #. to use s[0:4], or something like that, since this list might be incomplete (eg, mix, mxed, drng@,drain,draining,...)
+    unavailable_states = ['down', 'drng', 'draining', 'boot', 'reboot', 'comp']
     def __init__(self, partition='serc', format_fields_dict=None, sinfo_prams=None, Format_fields=None, verbose=False, do_sinfo=True):
         '''
         # @format_fields_dict: data-type translaton dict, eg: {'NCPUS': int, ...}
@@ -4088,13 +4097,37 @@ class SINFO_obj(object):
         # or...
         # numpy way:
         #cpu_totals = {st:numpy.sum( (self.sinfo_data['CPUS'])[self.sinfo_data['STATE']==st]) for st in numpy.unique(self.sinfo_data['STATE'])}
-        return {st:numpy.sum( (cpus_col)[state_col==st]) for st in numpy.unique(state_col)}
+        unique_states=numpy.unique(state_col)
+        return {st:numpy.sum( (cpus_col)[state_col==st]) for st in unique_states}
     #
     @property
     def cpu_totals(self):
         return self.get_cpu_totals()
     #
-    def get_available_cpus(self, cpus_col=None, state_col=None, gpus_col=None, gres_col=None):
+    def is_node_available(self, state=None, unavailable_states=None, k_start=0, k_stop=4):
+        if unavailable_states is None:
+            unavailable_states = self.unavailable_states
+        if unavailable_states is None:
+            unavailable_states = ['down', 'drng', 'draining', 'boot', 'reboot', 'comp']
+        if state is None:
+            state = self['STATE']
+        #
+        unav_states = [st[k_start:k_stop] for st in unavailable_states]
+        #
+        if isinstance(state, str):
+            return state[k_start:k_stop] not in unav_states
+        elif isinstance(state, bytes):
+            return state[k_start:k_stop].decode() not in unav_states
+        else:
+            return numpy.invert([st[k_start:k_stop] in unav_states for st in state])
+        #
+        
+    #
+    def get_available_cpus(self, cpus_col=None, state_col=None, gpus_col=None, gres_col=None, count_cpus=True, count_gpus=False, count_available=True, unavailable_states=None):
+        '''
+        # @count_cpus, @count_gpus: include cpu-cpus, gpu-cpus. ie, count_cpus=True, count_gpus=False gives only cpus on cpu-type machines.
+        #. count_cpus=True count_gpus=True gives all CPUs; count_cpus=False count_gpus=True gives cpus supporting GPUs
+        '''
         # TODO: initialize with GPU count; then separate GPU and CPU cpu counts.
         #. we might also then handle the GPUs separately as an index.
         #
@@ -4102,6 +4135,10 @@ class SINFO_obj(object):
         #. note, behavior is that gpus_col overrides gres_col
         if gres_col is not None and gpus_col is None:
             gpus_col = self.get_gpus(gres_col=gres_col)
+        if unavailable_states is None:
+            unavailable_states = self.unavailable_states
+        if unavailable_states is None:
+            unavailable_states = ['down', 'drng', 'draining', 'boot', 'reboot', 'comp']   
         #
         if cpus_col is None:
             cpus_col = self.sinfo_data['CPUS']
@@ -4116,8 +4153,25 @@ class SINFO_obj(object):
         #
 #         avail_cpus = numpy.sum([ncpus for ncpus,st,gres in  numpy.array([cpus_col, state_col, gpus_col]).T
 #                         if not st[0:4] in ('down', 'drng') and not 'gpu' in gres])
-        avail_cpus = numpy.sum([ncpus for ncpus,st,ngpus in  numpy.array([cpus_col, state_col, gpus_col]).T
-                        if not (st[0:4] in ('down', 'drng') or ngpus>0)])
+        #avail_cpus = numpy.sum([ncpus for ncpus,st,ngpus in  numpy.array([cpus_col, state_col, gpus_col]).T
+        #                if not (st[0:4] in [s[0:4] for s in unavailable_states] or ngpus>0)])
+        
+        #avail_cpus = numpy.sum(cpus_col[numpy.boolean_and(self.is_node_available(state_col), (gpus_col>0))] )
+        ix_cpus = numpy.logical_and(self['GPUS']==0, count_cpus)
+        ix_gpus = numpy.logical_and(self['GPUS']>0, count_gpus)
+        ix_avail = self.is_node_available(self['STATE'])
+        #
+#         if not count_cpus:
+#             ix_cpus = numpy.invert(ix_cpus)
+#         if not count_gpus:
+#             ix_gpus = numpy.invert(ix_gpus)
+        if not count_available:
+            ix_avail = numpy.invert(ix_avail)
+        #
+        #ix = numpy.logical_and(self.is_node_available(self['STATE']),  self['GPUS']==0)
+        ix = numpy.logical_or(ix_cpus, ix_gpus)
+        ix = numpy.logical_and(ix, ix_avail)
+        avail_cpus = numpy.sum(self['CPUS'][ix] )
 
         return avail_cpus
     #
