@@ -720,7 +720,7 @@ class SACCT_data_handler(object):
         ix = self.jobs_summary['NCPUS']==n_cpu
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
     #
-    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None, verbose=False):
+    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None):
         # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
         if jobs_summary is None:
             jobs_summary = self.jobs_summary
@@ -1246,7 +1246,7 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
-    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., ave_N_layers=1, qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., ave_N_layers=1, qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None, trendline=True):
         '''
         #  Inputs:
         #   @group_by: column name for grouping
@@ -1297,6 +1297,31 @@ class SACCT_data_handler(object):
         z_jobs = ax2.get_lines()[-1].get_ydata()
         z_cpus_smooth = running_mean(z_cpu, ave_len)
         z_jobs_smooth = running_mean(z_jobs, ave_len)
+        #
+        if trendline:
+            # For now, just a running mean on lc_ncpu and lc_njobs.
+            # lc_ncpu and lc_njobs should be [[t,z], ...] arrays.
+            n_poly  = 2
+            k_start = 5
+            k_end   = 5
+            A_cpus = numpy.array([lc_ncpu[:,0]**n for n in range(n_poly)]).T
+            p_cpus = numpy.linalg.lstsq(A_cpus[k_start:-k_end],lc_ncpu[k_start:-k_end,1])[0]
+            A_cpus = A_cpus[0::len(A_cpus)-1]
+            #
+            #A_jobs should be the same as A_cpu, but just in case...
+            A_jobs = numpy.array([lc_njobs[:,0]**n for n in range(n_poly)]).T
+            p_jobs = numpy.linalg.lstsq(A_jobs,lc_njobs[:,1])[0]
+            A_jobs = A_jobs[0::len(A_jobs)-1]
+            #
+            
+            ax1.plot(A_cpus[:,1], numpy.dot(A_cpus,p_cpus), ls='--', lw=3,
+                     label=f'trend: $b={p_cpus[1]:.2f} cpus/day$')
+            ax2.plot(A_jobs[:,1], numpy.dot(A_jobs,p_jobs), ls='--', lw=3, 
+                     label=f'trend: b={p_jobs[1]:.2f} jobs/day$')
+            #
+            del A_cpus, A_jobs, p_cpus, p_jobs
+                 
+        
         #
         ax1.plot(T[-len(z_cpus_smooth):], z_cpus_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
         ax2.plot(T[-len(z_jobs_smooth):], z_jobs_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
