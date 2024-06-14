@@ -34,6 +34,7 @@ import pandas
 import pylab as plt
 #
 day_2_sec=24.*3600.
+GB=1024.**3.
 #
 # NOTE: matplotlib.dates changed the standard reference epoch. This is mainly to mitigate roundin errors in modern
 #  dates. You can use set_/get_epoch() to read and modify the epoch, but there are rules about doing this
@@ -281,6 +282,8 @@ class SACCT_data_handler(object):
         #
         self.dt_mpd_epoch = self.compute_mpd_epoch_dt()
     #
+    def __len__(self, *args, **kwargs):
+        return len(self.jobs_summary)
     def __getitem__(self, *args, **kwargs):
         return self.jobs_summary.__getitem__(*args, **kwargs)
     def __setitem__(self, *args, **kwargs):
@@ -311,6 +314,9 @@ class SACCT_data_handler(object):
     #
     def compute_mpd_epoch_dt(self, test_col='Submit', test_index=0, yr_upper=3000, yr_lower=1000):
         #
+        # catch zero-length data exception:
+        if len(self) == 0:
+            return 0.
         #print('*** DEBUG: ', len(self.jobs_summary), len(self[test_col]))
         #print('*** DEBUG: ', self[test_col][0:10])
         test_date = None
@@ -368,6 +374,8 @@ class SACCT_data_handler(object):
         self.jobs_summary = self.calc_jobs_summary()
         if not self.keep_raw_data:
             del self.data
+        if len(self.jobs_summary)==0:
+            break
         #
         self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, t_min=t_min, t_max=t_max, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
         self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, t_min=t_min, t_max=t_max, n_cpu=n_cpu)
@@ -1707,7 +1715,8 @@ class SACCT_data_direct(SACCT_data_handler):
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         self.attributes.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
-        print('*** DEBUG: Now execute load_sacct_data(); options_str={}'.format(options_str))
+        if verbose:
+            print('*** DEBUG: Now execute load_sacct_data(); options_str={}'.format(options_str))
         self.data = self.load_sacct_data(options_str=options_str, format_string=format_string)
         #
         if not raw_output_file is None:
@@ -1724,8 +1733,9 @@ class SACCT_data_direct(SACCT_data_handler):
                       fout.write('{}\n'.format('\t'.join(list(rw))))
               #
         #
-        print('*** DEBUG: load_sacct_data() executed. Compute calc_jobs_summary()')
-        print('*** DEBUG: data stuff: ', len(self.data), self.data.dtype)
+        if verbose:
+            print('*** DEBUG: load_sacct_data() executed. Compute calc_jobs_summary()')
+            print('*** DEBUG: data stuff: ', len(self.data), self.data.dtype)
         #self.jobs_summary=self.calc_jobs_summary(data)
         #
         super(SACCT_data_direct, self).__init__(delim=delim, start_date=start_date, end_date=end_date, h5out_file=h5out_file, keep_raw_data=keep_raw_data,n_points_usage=n_points_usage, n_cpu=n_cpu, types_dict=types_dict, verbose=verbose, chunk_size=chunk_size, **kwargs)
@@ -1858,7 +1868,8 @@ class SACCT_data_direct(SACCT_data_handler):
             # as_dict requires headers; returns {'headers': headers, 'data':data}
             with_headers=True
         #
-        # NOTE: instead of scctt_str.split(), we can just use the shell=True option.
+        # NOTE: instead of sactt_str.split(), we can just use the shell=True option, except that the shell=True
+        #. option is considered insecure, since it is easier to pass bogus instructions.
         sacct_output = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         #print('** ', sacct_str)
         if '--nohheader' in sacct_str:
@@ -2029,6 +2040,8 @@ class SQUEUE_obj(object):
         self.squeue_data = self.get_squeue_data()
         self.dtype       = self.squeue_data.dtype
     #
+    def __len__(self, *args, **kwargs):
+        return len(self.squeue_data)
     def __getitem__(self, *args, **kwargs):
         return self.squeue_data.__getitem__(*args, **kwargs)
     def __setitem__(self, *args, kwargs):
@@ -3126,6 +3139,22 @@ def fix_to_ascii(s):
     # but let's see if it will be necessary, or if there's a smarter way to do it.
     #
     return out_str
+def NULL(x):
+    return x
+def aggregate_handler(x=None, type_in=numpy.float64, type_out=float, f=numpy.nanmax):
+    '''
+    # @x:        input vector
+    # @type_in:  convert x to this, x' = type_in(x), to aggregate
+    # @type_out: return as this type
+    # @f:        aggregate function.
+    #
+    # emulating something like this:
+    # lambda x: float(numpy.nanmax(numpy.float64(x)))
+    '''
+    agg = f(type_in(x))
+    if numpy.isnan(agg):
+        agg = None
+    return agg
     
 def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     '''
@@ -3140,14 +3169,15 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #   between the start/end dates. This means that if we break up the query, which we must 1) for performance, 2) SLURM restrictions
     #   on number of rows returned, 3) Sherlock/Kilian restrictions on query bredth. The general mechanism to summarize jobs *should*
     #   also de-dupe these rows (sort by job_id, then ???; then take max/min values for start, end, etc. times). But keep an eye on it; it could make mistakes.
-    # TODO: add GPUs ? two ways: at the end: 1)do this task as presently defined, then compute GPUs from the whole set and add
-    #   a column., 2) integrate a GPU column. into this workflow. To do it again... might just do this by-column anyway. there
-    #   are performance (and other things too...) rleated strategies in this that -- to do it again, I might not repeat.
     '''
     #
     #
     if data is None:
         raise Exception('No data provided.')
+    if len(data)==0:
+        # NOTE: We'll need to catch these None's, or instead just return data? Which should
+        #. indlude the dtype ?
+        return data
     #
     # TODO: this:
 #    if hasattr(data, 'dtype'):
@@ -3157,20 +3187,28 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #
     # array of input_col, output_col, function to handle updates to jobs_summary array.
 #   # js_col_f = [({output_col_name}, {input_col_name}, function), ... ]
-    js_col_f = [('End',       'End', numpy.nanmax),\
-                ('Start',     'Start', numpy.nanmax),\
-                ('NCPUS',     'NCPUS', lambda x: numpy.nanmax(x).astype(int)),\
-                ('NNodes',    'NNodes', lambda x: numpy.nanmax(x).astype(int)),\
-                ('NTasks',    'NTasks', lambda x: numpy.nanmax(x).astype(int)),\
-                ('MaxRSS',    'MaxRSS', numpy.nanmax),
-                ('AveRSS',    'AveRSS', numpy.nanmax),
-                ('MaxVMSize', 'MaxVMSize', numpy.nanmax),
-                ('AveVMSize', 'AveVMSize', numpy.nanmax),
-                ('MaxDiskWrite', 'MaxDiskWrite', numpy.nanmax),
-                ('AveDiskWrite', 'AveDiskWrite', numpy.nanmax),
-                ('MaxDiskRead',  'MaxDiskRead', numpy.nanmax),
-                ('AveDiskRead',  'AveDiskRead', numpy.nanmax),
-                ('NGPUs', 'AllocTRES', lambda x: numpy.nanmax(get_NGPUs(x)).astype(int) )
+    # NOTE: the "numpy.nanmax(x).astype(int)" looks excessive (why not just int() ), but int() seems to break when nan
+    #. values are encountered (even using nanmax()?). But .astype() fails with small data sets, where MPP comes back with 
+    #. empty sets... so ugh. So the TODO is to handle those processes that return empty sets. In the short term, work around
+    #. that problem by running on a small (1...) pool().
+    #
+    # LOTS of problems handling small data sets! See NTASKS handler. We will probably nedd to do something like that for
+    #. all fields?
+    js_col_f = [('End',       'End', lambda x: float(numpy.nanmax(numpy.float64(x))) ),\
+                ('Start',     'Start', lambda x: float(numpy.nanmax(numpy.float64(x))) ),\
+                #('NCPUS',     'NCPUS', lambda x: int(numpy.nanmax(x)) ),\
+                ('NCPUS',     'NCPUS', lambda x: numpy.nanmax(numpy.int64(x)).astype(int) ),\
+                ('NNodes',    'NNodes', lambda x: int(numpy.nanmax(numpy.int64(x))) ),\
+                ('NTasks',    'NTasks', lambda x: aggregate_handler(x, numpy.float64, int, numpy.nanmax) ),\
+                ('MaxRSS',    'MaxRSS', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('AveRSS',    'AveRSS', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('MaxVMSize', 'MaxVMSize', lambda x: float(numpy.nanmax(numpy.float64(x)))),
+                ('AveVMSize', 'AveVMSize', lambda x: float(numpy.nanmax(numpy.float64(x)))),
+                ('MaxDiskWrite', 'MaxDiskWrite', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('AveDiskWrite', 'AveDiskWrite', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('MaxDiskRead',  'MaxDiskRead', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('AveDiskRead',  'AveDiskRead', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('NGPUs', 'AllocTRES', lambda x: int(numpy.nanmax(get_NGPUs(x))) )
                 ]
     #
     n_cpu = int(n_cpu or 1)
@@ -3195,7 +3233,6 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #  and eventually it will attempt to sort on a Nonetype which will break. The workaround is to add an index column, which is
         #  necessarily unique to a data set
         #
-        #working_data = data[ix_s]
         working_data = data[:]
         working_data['index'] = numpy.arange(len(working_data))
         #
@@ -3207,11 +3244,10 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #   this is possibly best called a "bug." It would seem that sort() sorts along the specified axes and then all the
         #   rest of them anyway (even after the sort is resolved). it is worth noting then that this might also result in a
         #   performance hit, so even though our solution -- to compute an index, looks stupid, it might actually be best practice.
-        # seems sort of stupid, but this might work.
+        # sorting index (see "seems sort of stupid" description above):
         #ix_temp = numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])
         working_data = working_data[numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])]
         #
-        #ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
         ks = numpy.array([*numpy.arange(0, len(data), step_size), len(data)+1])
         #
         # TODO: some sorting...
@@ -3245,8 +3281,9 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #P.join()
         #results = [r.get() for r in R]
         #
+        print('*** DEBUG ks: ',  [(k1,k2) for k1,k2 in zip(ks[0:-1], ks[1:])])
         with mpp.Pool(n_cpu) as P:
-            R = [P.apply_async(calc_jobs_summary, kwds={'data':working_data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) ]
+            R = [P.apply_async(calc_jobs_summary, kwds={'data':working_data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) if not k1==k2]
             #
             results = [r.get() for r in R]
             if verbose:
@@ -3255,6 +3292,12 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         for xx in results:
             #xx = r.get()
             dk=len(xx)
+            #
+            # yoder, 2024-06-11
+            # catch case where results[j] is empty:
+            #if dk == 0:
+            #    del xx
+            #    continue
             #
             jobs_summary[k:k+dk]=xx
             k += dk
@@ -3338,8 +3381,20 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
 #            numpy.nanmax(numpy.array([get_NGPUs(s) for s in sub_data['AllocTRES']]).astype(int))
 #            )
         # this should do the trick for a compact format:
+        # "(col) name 1", "(col) name 2", "function"
         cls = [n1 for n1, n2, f in js_col_f]
-        jobs_summary[cls][k] = tuple([f(sub_data[n2]) for (n1, n2, f) in js_col_f])
+        try:
+            jobs_summary[cls][k] = tuple([f(sub_data[n2]) for (n1, n2, f) in js_col_f])
+        except:
+            print('*** EXCEPTION sub_data: ', sub_data)
+            print('*** *** dtype: ', sub_data.dtype)
+            #
+            print('*** *** run through sub_data cols:')
+            for n1,n2,f in js_col_f:
+                print(f' ** ** {n1} :: {n2} :: {f}')
+                print(f' ** ** sub_data[n2]:: {sub_data[n2]}')
+                print(f' **  * {f(sub_data[n2])}')
+            raise Exception()
         #
         del sub_data
     #
@@ -3411,7 +3466,9 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
         print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
     #
     # handle currently running jobs (do we need to copy() the data?)
-    t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+    t_end[numpy.equal(t_end, None)]   = t_now
+    t_end[numpy.isnan(t_end.tolist())] = t_now
+    # t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
     #
     if verbose:
         print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
@@ -3560,6 +3617,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     #
     mpp_chunksize = mpp_chunksize or 1000
     n_cpu = n_cpu or 1
+    n_cpu = int(n_cpu)
     #
     if jobs_summary is None or len(jobs_summary) == 0:
         return null_return()
@@ -3569,10 +3627,18 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     #
     t_start = jobs_summary['Start']
     t_end = jobs_summary['End']
-    t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
     #
-    #print('** DEBUG: ', t_end.shape, t_start.shape)
+    # Ok... ugh. The problem here is None, NaN, and data types. we can use numpy.equald() to convert the
+    #. None values to t_now, but it gets slapped with a dtype=object, when the None values are introduced,
+    #  isnan() will not broadcast properly for dtype=object, so we have to do a trick...
     #
+    #print('*** DEBUG: t_start: ', t_start[0:10])
+    t_start[numpy.equal(t_start, None)]=numpy.nan
+    t_start = numpy.array(t_start.tolist()).astype(float)
+    #
+    t_end[numpy.equal(t_end, None)] = t_now
+    t_end[numpy.isnan(t_end.tolist())] = t_now
+    #t_end[numpy.logical_or(numpy.equal(t_end, None), numpy.isnan(t_end))] = t_now
     if t_min is None:
         t_min = numpy.nanmin([t_start, t_end])
     #
@@ -3647,6 +3713,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
 #                ('N_cpu', '>f8')])
 #        output['time'] = numpy.linspace(t_min, t_max, n_points)
         #
+        #print('** DEBUG: types: ', type(t_start), type(n_cpu), n_cpu)
         n_procs = min(numpy.ceil(len(t_start)/n_cpu).astype(int), numpy.ceil(len(t_start)/mpp_chunksize).astype(int) )
         ks_r = numpy.linspace(0, len(t_start), n_procs+1).astype(int)
         #
