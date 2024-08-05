@@ -375,12 +375,13 @@ class SACCT_data_handler(object):
         if not self.keep_raw_data:
             del self.data
         if len(self.jobs_summary)==0:
-            break
+            return None
         #
         self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, t_min=t_min, t_max=t_max, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
         self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, t_min=t_min, t_max=t_max, n_cpu=n_cpu)
         self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, t_min=t_min, t_max=t_max, n_cpu=n_cpu)
         #
+        return len(self.jobs_summary)
     #
     def load_data(self, data_file_name=None):
         #
@@ -832,7 +833,7 @@ class SACCT_data_handler(object):
                                                 jobs_summary=jobs_summary[ix])
             output_cpuh[ky] = XX['cpu_hours'][:]
             output_jobs[ky] = XX['N_jobs'][:]
-            output_elapsed[ky] =  numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
+            output_elapsed[ky] =  24.*numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
         #
         output_cpuh['time'] = XX['time']
         output_jobs['time'] = XX['time']
@@ -1398,8 +1399,8 @@ class SACCT_data_handler(object):
         #
         z_cpuh = plot_layer_cake(data=cpuh, layers=cpuh.dtype.names[1:], time_col='time', ax=ax1)
         z_jobs = plot_layer_cake(data=jobs, layers=cpuh.dtype.names[1:], time_col='time', ax=ax2)
-        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
-        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
+        pie_cpuh_data = plot_pie(sum_data=24.*self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
+        pie_jobs_data = plot_pie(sum_data=24.*self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
         #
         ax1.legend(loc=0)
         ax2.legend(loc=0)
@@ -3414,6 +3415,9 @@ def get_NGPUs(alloc_tres=None):
 #
 def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=10000, d_t=None):
     '''
+    # NOTE: Should correctly convert SLURM native DAYS units to hours (coorectly return CPU-hours, not
+    #.  CPU-days).
+    #
     # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
     #  intermediat/transient arrays.
     #
@@ -4070,10 +4074,10 @@ class SINFO_obj(object):
         #
         # ugh... should not have hard-coded this list -- even a short one. But just doing this should
         #. get us what we need. This will patch back to provide backwards compatibility.
-        if Format_fields is None or Format_fields.lower() in ('mem', 'memory'):
+        if Format_fields is None or (isinstance(Format_fields, str) and Format_fields.lower() in ('mem', 'memory')):
             #Format_fields = ['NodeHost','Memory','AllocMem']
             Format_fields = self.format_fields_mem
-        if Format_fields.lower() in ('node', 'nodes'):
+        if (isinstance(Format_fields, str) and Format_fields.lower() in ('node', 'nodes')):
             Format_fields = self.format_fields_node
         #
         sinfo_fields = {'--Format': Format_fields,
@@ -4173,6 +4177,16 @@ class SINFO_obj(object):
 
 
     #
+    @property
+    def total_cpus(self, cpus_col=None):
+        #
+        if isinstance(cpus_col, str):
+            cpus_col = self.sinfo_data[cpus_col]
+        if cpus_col is None:
+            cpus_col = self.sinfo_data['CPUS']
+        #
+        return numpy.sum(cpus_col)
+    
     def get_cpu_totals(self, cpus_col=None, state_col=None):
         #
         if cpus_col is None:
