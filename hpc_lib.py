@@ -87,21 +87,24 @@ def elapsed_time_2_day(tm_in, verbose=0):
     #
     if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
     #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
-        return None
+        return 0.
+    #
+    if tm_in is None:
+        return 0.
     #
     return elapsed_time_2_sec(tm_in=tm_in, verbose=verbose)/(day_2_sec)
 #
 def elapsed_time_2_sec(tm_in, verbose=0):
     #
     # TODO: really??? why not just post the PL value?
-    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
+    if tm_in in ( 'Partition_Limit', 'UNLIMITED', 'unlimited', 'infinite' ) or tm_in is None:
     #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
-        return None
+        return 0.
     #
     days, tm = ([0,0] + list(tm_in.split('-')))[-2:]
     #
     if tm==0:
-        return 0
+        return 0.
     days=float(days)
     #
     if verbose:
@@ -131,7 +134,7 @@ def elapsed_time_2_sec_v(tm_in, verbose=0):
     days, tm = ([0,0] + list(tm_in.split('-')))[-2:]
     #
     if tm==0:
-        return 0
+        return None
     days=float(days)
     #
     if verbose:
@@ -4178,6 +4181,10 @@ class SINFO_obj(object):
 
     #
     @property
+    def total_nodes(self):
+        return len(self.sinfo_data)
+    #
+    @property
     def total_cpus(self, cpus_col=None):
         #
         if isinstance(cpus_col, str):
@@ -4306,6 +4313,10 @@ class SINFO_obj(object):
         #
         return avail_cpus
     #
+    @property
+    def total_gpus(self):
+        return numpy.sum(self.get_gpus_col())
+    #
     def get_gpus_col(self, gres_col=None):
         '''
         # inputs:
@@ -4317,9 +4328,14 @@ class SINFO_obj(object):
         #. out to be difficult in some instances.
         if gres_col is None:
             gres_col = self.sinfo_data['GRES']
+            #gres_col = self.sinfo_data['TRES']
         #
         # an optimized solution, that will probalby work most of the time is like:
-        return numpy.array([0 if not 'gpu' in s else int(s[ (s.index('gpu:')+4) : (s.index('(', s.index('gpu:')+4) ) ]) 
+        # But... for STATE=='drain*', GRES==gpu:8
+        # ugh...
+#         return numpy.array([0 if not 'gpu' in s else int(s[ (s.index('gpu:')+4) : (s.index('(', s.index('gpu:')+4) ) ]) 
+#                              for s in gres_col ])
+        return numpy.array([0 if not 'gpu' in s else int(s[ (s.index('gpu:')+4) : (len(s) if not '(' in s else s.find('(', s.index('gpu:')+4) ) ]) 
                              for s in gres_col ])
     #
     
