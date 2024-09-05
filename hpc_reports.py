@@ -19,7 +19,7 @@ import h5py
 import subprocess
 import shlex
 #
-import numba
+#import numba
 import pandas
 #
 # TODO: so... do we keep our plotting routines separate, or do we just make sure we use... uhh? (double check this)

@@ -4,6 +4,7 @@ import os
 import sys
 import math
 import numpy
+import numpy.lib.recfunctions as nrf
 import scipy
 import scipy.constants
 #import matplotlib
@@ -33,6 +34,7 @@ import pandas
 import pylab as plt
 #
 day_2_sec=24.*3600.
+GB=1024.**3.
 #
 # NOTE: matplotlib.dates changed the standard reference epoch. This is mainly to mitigate roundin errors in modern
 #  dates. You can use set_/get_epoch() to read and modify the epoch, but there are rules about doing this
@@ -85,21 +87,24 @@ def elapsed_time_2_day(tm_in, verbose=0):
     #
     if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
     #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
-        return None
+        return 0.
+    #
+    if tm_in is None:
+        return 0.
     #
     return elapsed_time_2_sec(tm_in=tm_in, verbose=verbose)/(day_2_sec)
 #
 def elapsed_time_2_sec(tm_in, verbose=0):
     #
     # TODO: really??? why not just post the PL value?
-    if tm_in in ( 'Partition_Limit', 'UNLIMITED' ) or tm_in is None:
+    if tm_in in ( 'Partition_Limit', 'UNLIMITED', 'unlimited', 'infinite' ) or tm_in is None:
     #if tm_in.lower() in ( 'partition_limit', 'unlimited' ):
-        return None
+        return 0.
     #
     days, tm = ([0,0] + list(tm_in.split('-')))[-2:]
     #
     if tm==0:
-        return 0
+        return 0.
     days=float(days)
     #
     if verbose:
@@ -129,7 +134,7 @@ def elapsed_time_2_sec_v(tm_in, verbose=0):
     days, tm = ([0,0] + list(tm_in.split('-')))[-2:]
     #
     if tm==0:
-        return 0
+        return None
     days=float(days)
     #
     if verbose:
@@ -195,7 +200,7 @@ default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':
 # yoder, 2022-08-11: updating default_SLURM_types_dict, mostly to facilitate SQUEUE calls. separating it out
 #   (rather than just directly add in the new cols) for posterity. also, adding .lower() and .upper() duplicate
 #   entries to simplify searching.
-default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus']})
+default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus', 'gpus', 'GPUS', 'MEMORY']})
 default_SLURM_types_dict.update({'TIMELEFT':elapsed_time_2_day, 'TIMEUSED':elapsed_time_2_day})
 dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict.items()}
 dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict.items()} )
@@ -280,6 +285,8 @@ class SACCT_data_handler(object):
         #
         self.dt_mpd_epoch = self.compute_mpd_epoch_dt()
     #
+    def __len__(self, *args, **kwargs):
+        return len(self.jobs_summary)
     def __getitem__(self, *args, **kwargs):
         return self.jobs_summary.__getitem__(*args, **kwargs)
     def __setitem__(self, *args, **kwargs):
@@ -310,6 +317,9 @@ class SACCT_data_handler(object):
     #
     def compute_mpd_epoch_dt(self, test_col='Submit', test_index=0, yr_upper=3000, yr_lower=1000):
         #
+        # catch zero-length data exception:
+        if len(self) == 0:
+            return 0.
         #print('*** DEBUG: ', len(self.jobs_summary), len(self[test_col]))
         #print('*** DEBUG: ', self[test_col][0:10])
         test_date = None
@@ -367,11 +377,14 @@ class SACCT_data_handler(object):
         self.jobs_summary = self.calc_jobs_summary()
         if not self.keep_raw_data:
             del self.data
+        if len(self.jobs_summary)==0:
+            return None
         #
         self.cpu_usage = self.active_jobs_cpu(n_cpu=n_cpu, t_min=t_min, t_max=t_max, mpp_chunksize=min(int(len(self.jobs_summary)/n_cpu), chunk_size) )
         self.weekly_hours = self.get_cpu_hours(bin_size=7, n_points=n_points_usage, t_min=t_min, t_max=t_max, n_cpu=n_cpu)
         self.daily_hours = self.get_cpu_hours(bin_size=1, n_points=n_points_usage, t_min=t_min, t_max=t_max, n_cpu=n_cpu)
         #
+        return len(self.jobs_summary)
     #
     def load_data(self, data_file_name=None):
         #
@@ -734,14 +747,16 @@ class SACCT_data_handler(object):
         #
         if t_max is None:
             t_max = numpy.nanmax([jobs_summary['Start'], jobs_summary['End']])
-            print(f'*** DEBUG t_now: {t_now}, t_max: {t_max}')
+            if verbose:
+                print(f'*** DEBUG t_now: {t_now}, t_max: {t_max}')
             t_max = numpy.nanmin([t_now, t_max])
         #
         if layers is None:
             layers = [ky.decode() if hasattr(ky,'decode') else ky for ky in list(set(jobs_summary[layer_field]))]
         layers = {ky:{} for ky in layers}
         if verbose:
-            print('*** ', layers)
+            if verbose:
+                print('*** ', layers)
         #
         dtype_cpuh = [(s, '>f8') for s in ['time'] + list(layers.keys())]
         dtype_jobs = dtype_cpuh
@@ -821,7 +836,7 @@ class SACCT_data_handler(object):
                                                 jobs_summary=jobs_summary[ix])
             output_cpuh[ky] = XX['cpu_hours'][:]
             output_jobs[ky] = XX['N_jobs'][:]
-            output_elapsed[ky] =  numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
+            output_elapsed[ky] =  24.*numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
         #
         output_cpuh['time'] = XX['time']
         output_jobs['time'] = XX['time']
@@ -1243,7 +1258,7 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
-    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., ave_N_layers=1, qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None, trendline=True):
         '''
         #  Inputs:
         #   @group_by: column name for grouping
@@ -1285,8 +1300,8 @@ class SACCT_data_handler(object):
         #jobs = acpu_layer_cake['N_jobs']
         T = acpu_layer_cake['N_cpu']['time']
         #
-        lc_ncpu = plot_layer_cake(data=acpu_layer_cake['N_cpu'], ax=ax1)
-        lc_njobs = plot_layer_cake(data=acpu_layer_cake['N_jobs'], ax=ax2)
+        lc_ncpu = plot_layer_cake(data=acpu_layer_cake['N_cpu'], ave_len=ave_N_layers, ax=ax1)
+        lc_njobs = plot_layer_cake(data=acpu_layer_cake['N_jobs'], ave_len=ave_N_layers, ax=ax2)
         #
         # get an averaging length (number of TS elements) of about ave_len_days
         ave_len = int(numpy.ceil(ave_len_days*len(T)/(T[-1] - T[0])))
@@ -1294,6 +1309,31 @@ class SACCT_data_handler(object):
         z_jobs = ax2.get_lines()[-1].get_ydata()
         z_cpus_smooth = running_mean(z_cpu, ave_len)
         z_jobs_smooth = running_mean(z_jobs, ave_len)
+        #
+        if trendline:
+            # For now, just a running mean on lc_ncpu and lc_njobs.
+            # lc_ncpu and lc_njobs should be [[t,z], ...] arrays.
+            n_poly  = 2
+            k_start = 5
+            k_end   = 5
+            A_cpus = numpy.array([lc_ncpu[:,0]**n for n in range(n_poly)]).T
+            p_cpus = numpy.linalg.lstsq(A_cpus[k_start:-k_end],lc_ncpu[k_start:-k_end,1])[0]
+            A_cpus = A_cpus[0::len(A_cpus)-1]
+            #
+            #A_jobs should be the same as A_cpu, but just in case...
+            A_jobs = numpy.array([lc_njobs[:,0]**n for n in range(n_poly)]).T
+            p_jobs = numpy.linalg.lstsq(A_jobs,lc_njobs[:,1])[0]
+            A_jobs = A_jobs[0::len(A_jobs)-1]
+            #
+            
+            ax1.plot(A_cpus[:,1], numpy.dot(A_cpus,p_cpus), ls='--', lw=3,
+                     label=f'trend: $b={p_cpus[1]:.2f} cpus/day$')
+            ax2.plot(A_jobs[:,1], numpy.dot(A_jobs,p_jobs), ls='--', lw=3, 
+                     label=f'trend: b={p_jobs[1]:.2f} jobs/day$')
+            #
+            del A_cpus, A_jobs, p_cpus, p_jobs
+                 
+        
         #
         ax1.plot(T[-len(z_cpus_smooth):], z_cpus_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
         ax2.plot(T[-len(z_jobs_smooth):], z_jobs_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
@@ -1362,8 +1402,8 @@ class SACCT_data_handler(object):
         #
         z_cpuh = plot_layer_cake(data=cpuh, layers=cpuh.dtype.names[1:], time_col='time', ax=ax1)
         z_jobs = plot_layer_cake(data=jobs, layers=cpuh.dtype.names[1:], time_col='time', ax=ax2)
-        pie_cpuh_data = plot_pie(sum_data=self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
-        pie_jobs_data = plot_pie(sum_data=self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
+        pie_cpuh_data = plot_pie(sum_data=24.*self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
+        pie_jobs_data = plot_pie(sum_data=24.*self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
         #
         ax1.legend(loc=0)
         ax2.legend(loc=0)
@@ -1679,7 +1719,8 @@ class SACCT_data_direct(SACCT_data_handler):
         self.__dict__.update({ky:val for ky,val in locals().items() if not ky in ('self', '__class__')})
         self.attributes.update({key:val for key,val in locals().items() if not key in ['self', '__class__']})
         #
-        print('*** DEBUG: Now execute load_sacct_data(); options_str={}'.format(options_str))
+        if verbose:
+            print('*** DEBUG: Now execute load_sacct_data(); options_str={}'.format(options_str))
         self.data = self.load_sacct_data(options_str=options_str, format_string=format_string)
         #
         if not raw_output_file is None:
@@ -1696,8 +1737,9 @@ class SACCT_data_direct(SACCT_data_handler):
                       fout.write('{}\n'.format('\t'.join(list(rw))))
               #
         #
-        print('*** DEBUG: load_sacct_data() executed. Compute calc_jobs_summary()')
-        print('*** DEBUG: data stuff: ', len(self.data), self.data.dtype)
+        if verbose:
+            print('*** DEBUG: load_sacct_data() executed. Compute calc_jobs_summary()')
+            print('*** DEBUG: data stuff: ', len(self.data), self.data.dtype)
         #self.jobs_summary=self.calc_jobs_summary(data)
         #
         super(SACCT_data_direct, self).__init__(delim=delim, start_date=start_date, end_date=end_date, h5out_file=h5out_file, keep_raw_data=keep_raw_data,n_points_usage=n_points_usage, n_cpu=n_cpu, types_dict=types_dict, verbose=verbose, chunk_size=chunk_size, **kwargs)
@@ -1830,7 +1872,8 @@ class SACCT_data_direct(SACCT_data_handler):
             # as_dict requires headers; returns {'headers': headers, 'data':data}
             with_headers=True
         #
-        # NOTE: instead of scctt_str.split(), we can just use the shell=True option.
+        # NOTE: instead of sactt_str.split(), we can just use the shell=True option, except that the shell=True
+        #. option is considered insecure, since it is easier to pass bogus instructions.
         sacct_output = subprocess.run(sacct_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         #print('** ', sacct_str)
         if '--nohheader' in sacct_str:
@@ -2001,6 +2044,8 @@ class SQUEUE_obj(object):
         self.squeue_data = self.get_squeue_data()
         self.dtype       = self.squeue_data.dtype
     #
+    def __len__(self, *args, **kwargs):
+        return len(self.squeue_data)
     def __getitem__(self, *args, **kwargs):
         return self.squeue_data.__getitem__(*args, **kwargs)
     def __setitem__(self, *args, kwargs):
@@ -3098,6 +3143,22 @@ def fix_to_ascii(s):
     # but let's see if it will be necessary, or if there's a smarter way to do it.
     #
     return out_str
+def NULL(x):
+    return x
+def aggregate_handler(x=None, type_in=numpy.float64, type_out=float, f=numpy.nanmax):
+    '''
+    # @x:        input vector
+    # @type_in:  convert x to this, x' = type_in(x), to aggregate
+    # @type_out: return as this type
+    # @f:        aggregate function.
+    #
+    # emulating something like this:
+    # lambda x: float(numpy.nanmax(numpy.float64(x)))
+    '''
+    agg = f(type_in(x))
+    if numpy.isnan(agg):
+        agg = None
+    return agg
     
 def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     '''
@@ -3112,14 +3173,15 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #   between the start/end dates. This means that if we break up the query, which we must 1) for performance, 2) SLURM restrictions
     #   on number of rows returned, 3) Sherlock/Kilian restrictions on query bredth. The general mechanism to summarize jobs *should*
     #   also de-dupe these rows (sort by job_id, then ???; then take max/min values for start, end, etc. times). But keep an eye on it; it could make mistakes.
-    # TODO: add GPUs ? two ways: at the end: 1)do this task as presently defined, then compute GPUs from the whole set and add
-    #   a column., 2) integrate a GPU column. into this workflow. To do it again... might just do this by-column anyway. there
-    #   are performance (and other things too...) rleated strategies in this that -- to do it again, I might not repeat.
     '''
     #
     #
     if data is None:
         raise Exception('No data provided.')
+    if len(data)==0:
+        # NOTE: We'll need to catch these None's, or instead just return data? Which should
+        #. indlude the dtype ?
+        return data
     #
     # TODO: this:
 #    if hasattr(data, 'dtype'):
@@ -3129,20 +3191,28 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #
     # array of input_col, output_col, function to handle updates to jobs_summary array.
 #   # js_col_f = [({output_col_name}, {input_col_name}, function), ... ]
-    js_col_f = [('End',       'End', numpy.nanmax),\
-                ('Start',     'Start', numpy.nanmax),\
-                ('NCPUS',     'NCPUS', lambda x: numpy.nanmax(x).astype(int)),\
-                ('NNodes',    'NNodes', lambda x: numpy.nanmax(x).astype(int)),\
-                ('NTasks',    'NTasks', lambda x: numpy.nanmax(x).astype(int)),\
-                ('MaxRSS',    'MaxRSS', numpy.nanmax),
-                ('AveRSS',    'AveRSS', numpy.nanmax),
-                ('MaxVMSize', 'MaxVMSize', numpy.nanmax),
-                ('AveVMSize', 'AveVMSize', numpy.nanmax),
-                ('MaxDiskWrite', 'MaxDiskWrite', numpy.nanmax),
-                ('AveDiskWrite', 'AveDiskWrite', numpy.nanmax),
-                ('MaxDiskRead',  'MaxDiskRead', numpy.nanmax),
-                ('AveDiskRead',  'AveDiskRead', numpy.nanmax),
-                ('NGPUs', 'AllocTRES', lambda x: numpy.nanmax(get_NGPUs(x)).astype(int) )
+    # NOTE: the "numpy.nanmax(x).astype(int)" looks excessive (why not just int() ), but int() seems to break when nan
+    #. values are encountered (even using nanmax()?). But .astype() fails with small data sets, where MPP comes back with 
+    #. empty sets... so ugh. So the TODO is to handle those processes that return empty sets. In the short term, work around
+    #. that problem by running on a small (1...) pool().
+    #
+    # LOTS of problems handling small data sets! See NTASKS handler. We will probably nedd to do something like that for
+    #. all fields?
+    js_col_f = [('End',       'End', lambda x: float(numpy.nanmax(numpy.float64(x))) ),\
+                ('Start',     'Start', lambda x: float(numpy.nanmax(numpy.float64(x))) ),\
+                #('NCPUS',     'NCPUS', lambda x: int(numpy.nanmax(x)) ),\
+                ('NCPUS',     'NCPUS', lambda x: numpy.nanmax(numpy.int64(x)).astype(int) ),\
+                ('NNodes',    'NNodes', lambda x: int(numpy.nanmax(numpy.int64(x))) ),\
+                ('NTasks',    'NTasks', lambda x: aggregate_handler(x, numpy.float64, int, numpy.nanmax) ),\
+                ('MaxRSS',    'MaxRSS', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('AveRSS',    'AveRSS', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('MaxVMSize', 'MaxVMSize', lambda x: float(numpy.nanmax(numpy.float64(x)))),
+                ('AveVMSize', 'AveVMSize', lambda x: float(numpy.nanmax(numpy.float64(x)))),
+                ('MaxDiskWrite', 'MaxDiskWrite', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('AveDiskWrite', 'AveDiskWrite', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('MaxDiskRead',  'MaxDiskRead', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('AveDiskRead',  'AveDiskRead', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
+                ('NGPUs', 'AllocTRES', lambda x: int(numpy.nanmax(get_NGPUs(x))) )
                 ]
     #
     n_cpu = int(n_cpu or 1)
@@ -3167,7 +3237,6 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #  and eventually it will attempt to sort on a Nonetype which will break. The workaround is to add an index column, which is
         #  necessarily unique to a data set
         #
-        #working_data = data[ix_s]
         working_data = data[:]
         working_data['index'] = numpy.arange(len(working_data))
         #
@@ -3179,11 +3248,10 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #   this is possibly best called a "bug." It would seem that sort() sorts along the specified axes and then all the
         #   rest of them anyway (even after the sort is resolved). it is worth noting then that this might also result in a
         #   performance hit, so even though our solution -- to compute an index, looks stupid, it might actually be best practice.
-        # seems sort of stupid, but this might work.
+        # sorting index (see "seems sort of stupid" description above):
         #ix_temp = numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])
         working_data = working_data[numpy.argsort(working_data[['JobID_parent', 'index']], order=['JobID_parent', 'index'])]
         #
-        #ks = numpy.append(numpy.arange(0, len(data), step_size), [len(data)+1] )
         ks = numpy.array([*numpy.arange(0, len(data), step_size), len(data)+1])
         #
         # TODO: some sorting...
@@ -3217,8 +3285,9 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         #P.join()
         #results = [r.get() for r in R]
         #
+        print('*** DEBUG ks: ',  [(k1,k2) for k1,k2 in zip(ks[0:-1], ks[1:])])
         with mpp.Pool(n_cpu) as P:
-            R = [P.apply_async(calc_jobs_summary, kwds={'data':working_data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) ]
+            R = [P.apply_async(calc_jobs_summary, kwds={'data':working_data[k1:k2], 'verbose':verbose, 'n_cpu':1}) for k1,k2 in zip(ks[0:-1], ks[1:]) if not k1==k2]
             #
             results = [r.get() for r in R]
             if verbose:
@@ -3227,6 +3296,12 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
         for xx in results:
             #xx = r.get()
             dk=len(xx)
+            #
+            # yoder, 2024-06-11
+            # catch case where results[j] is empty:
+            #if dk == 0:
+            #    del xx
+            #    continue
             #
             jobs_summary[k:k+dk]=xx
             k += dk
@@ -3310,8 +3385,20 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
 #            numpy.nanmax(numpy.array([get_NGPUs(s) for s in sub_data['AllocTRES']]).astype(int))
 #            )
         # this should do the trick for a compact format:
+        # "(col) name 1", "(col) name 2", "function"
         cls = [n1 for n1, n2, f in js_col_f]
-        jobs_summary[cls][k] = tuple([f(sub_data[n2]) for (n1, n2, f) in js_col_f])
+        try:
+            jobs_summary[cls][k] = tuple([f(sub_data[n2]) for (n1, n2, f) in js_col_f])
+        except:
+            print('*** EXCEPTION sub_data: ', sub_data)
+            print('*** *** dtype: ', sub_data.dtype)
+            #
+            print('*** *** run through sub_data cols:')
+            for n1,n2,f in js_col_f:
+                print(f' ** ** {n1} :: {n2} :: {f}')
+                print(f' ** ** sub_data[n2]:: {sub_data[n2]}')
+                print(f' **  * {f(sub_data[n2])}')
+            raise Exception()
         #
         del sub_data
     #
@@ -3331,6 +3418,9 @@ def get_NGPUs(alloc_tres=None):
 #
 def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summary=None, verbose=False, n_cpu=None, step_size=10000, d_t=None):
     '''
+    # NOTE: Should correctly convert SLURM native DAYS units to hours (coorectly return CPU-hours, not
+    #.  CPU-days).
+    #
     # Loop-Loop version of get_cpu_hours. should be more memory efficient, might actually be faster by eliminating
     #  intermediat/transient arrays.
     #
@@ -3383,7 +3473,9 @@ def get_cpu_hours(n_points=10000, bin_size=7., t_min=None, t_max=None, jobs_summ
         print('** DEBUG: (get_cpu_hours) initial shapes:: ', t_end.shape, t_start.shape, jobs_summary['End'].shape )
     #
     # handle currently running jobs (do we need to copy() the data?)
-    t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
+    t_end[numpy.equal(t_end, None)]   = t_now
+    t_end[numpy.isnan(t_end.tolist())] = t_now
+    # t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
     #
     if verbose:
         print('** DEBUG: (get_cpu_hours)', t_end.shape, t_start.shape)
@@ -3532,6 +3624,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     #
     mpp_chunksize = mpp_chunksize or 1000
     n_cpu = n_cpu or 1
+    n_cpu = int(n_cpu)
     #
     if jobs_summary is None or len(jobs_summary) == 0:
         return null_return()
@@ -3541,10 +3634,18 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
     #
     t_start = jobs_summary['Start']
     t_end = jobs_summary['End']
-    t_end[numpy.logical_or(t_end is None, numpy.isnan(t_end))] = t_now
     #
-    #print('** DEBUG: ', t_end.shape, t_start.shape)
+    # Ok... ugh. The problem here is None, NaN, and data types. we can use numpy.equald() to convert the
+    #. None values to t_now, but it gets slapped with a dtype=object, when the None values are introduced,
+    #  isnan() will not broadcast properly for dtype=object, so we have to do a trick...
     #
+    #print('*** DEBUG: t_start: ', t_start[0:10])
+    t_start[numpy.equal(t_start, None)]=numpy.nan
+    t_start = numpy.array(t_start.tolist()).astype(float)
+    #
+    t_end[numpy.equal(t_end, None)] = t_now
+    t_end[numpy.isnan(t_end.tolist())] = t_now
+    #t_end[numpy.logical_or(numpy.equal(t_end, None), numpy.isnan(t_end))] = t_now
     if t_min is None:
         t_min = numpy.nanmin([t_start, t_end])
     #
@@ -3619,6 +3720,7 @@ def active_jobs_cpu(n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=
 #                ('N_cpu', '>f8')])
 #        output['time'] = numpy.linspace(t_min, t_max, n_points)
         #
+        #print('** DEBUG: types: ', type(t_start), type(n_cpu), n_cpu)
         n_procs = min(numpy.ceil(len(t_start)/n_cpu).astype(int), numpy.ceil(len(t_start)/mpp_chunksize).astype(int) )
         ks_r = numpy.linspace(0, len(t_start), n_procs+1).astype(int)
         #
@@ -3696,7 +3798,7 @@ def flatten(A):
         else: rt.append(i)
     return rt
 #
-def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
+def plot_layer_cake(data=None, layers=None, time_col='time', ave_len=1, ax=None):
     '''
     # general handler for layer cake plots. Assume data is like [[time, {data cols}]].
     # Question: qualify this geometrically (dtype.names[1:]) or by value
@@ -3719,13 +3821,16 @@ def plot_layer_cake(data=None, layers=None, time_col='time', ax=None):
             layers = [ky for ky in data.keys() if not ky == time_col]
         #
     #
-    T = data[time_col]
+    T = data[time_col][ave_len-1:]
     #
-    z = numpy.zeros(len(data))
+    z = numpy.zeros(len(data)-ave_len+1)
+    #
     for lyr in layers:
         # there are more efficient ways to do this, but this will be fine...
         z_prev = z.copy()
-        z += data[lyr]
+        #z += data[lyr]
+        z += running_mean(data[lyr], ave_len)
+        #print('** len(z): ', len(z))
         #
         ln, = ax.plot(T,z, ls='-', alpha=.8)
         clr = ln.get_color()
@@ -3911,77 +4016,328 @@ def fg_time_labels_to_dates(ax, dt_epoch=None):
     #
     return lbls
 
+# yoder:
+#. want a more versatile and multi-purpose SINFO class tool. Made the mistake of hard-coding the initial-purpose
+#. (albeit short...) Format list with [NodeHost, Memory, AllocMem]. No real harm just leaving those, for backward
+#. compatibility, but it might be better to just build a new, more specific class case, like:
+# class SINFO_NODES_obj(object):
+# And really, there is a bit more custom purpose written into SINFO_obj() than I really want to work around, so...
+#. (and I'm just going to copy-paste repeated code, rather than inherit). There's not a lot of it, and this will end up
+#. being a more generalized, versatile class.
+class SINFO_NODES_obj(object):
+    def __init__(self, partition='serc', format_fields_dict=None, sinfo_prams=None, Format_fields=None, verbose=False):
+        '''
+        # notes...
+        '''
+        #
+        # TODO: add **kwargs syntax like pram_{name} --> sinfo_prams, fmt_{name} --> Format
+        if format_fields_dict is None:
+            format_fields_dict = default_SLURM_types_dict
+        #
+        sinfo_prams = (sinfo_prams or {})
+        sinfo_prams['Nodes']=''
+        #
+        if not (partition is None or partition==''):
+            sinfo_prams['partition'] = partition
+        #
+        # Note: "or" syntax might not work here...
+        Format_fields=numpy.unique(numpy.append(['nodehost'], (format_fields or [])))
+        #
+            
 
 class SINFO_obj(object):
     # SINFO Object.  This object will obtain and parse data from sinfo
     # The initial need for this object is to get total memory for a cluster
     #           Which is not available from squeue or sacct
-    def __init__(self, partition='serc', format_fields_dict=None, sinfo_prams=None, verbose=False):
+    node_states = {}
+    format_fields_node = ['nodelist','nodehost','nodes','partition','cpus','memory','statecompact',\
+               'available','gres','features:100']
+    format_fields_mem = ['NodeHost','Memory','AllocMem']
+    #
+    # Unavaiable states (ie, if it's in this state, it's not available). Note that a good practice is
+    #. to use s[0:4], or something like that, since this list might be incomplete (eg, mix, mxed, drng@,drain,draining,...)
+    unavailable_states = ['down', 'drng', 'draining', 'boot', 'reboot', 'comp']
+    def __init__(self, partition='serc', format_fields_dict=None, sinfo_prams=None, Format_fields=None, verbose=False, do_sinfo=True):
+        '''
+        # @format_fields_dict: data-type translaton dict, eg: {'NCPUS': int, ...}
         #
         # @sinfo_prams: additional or replacement fields for squeue_fields variable, eg parameters
         #. to pass to squeue. Presently, --Format and --partition are specified. some options might also
         #. be allowed as regular inputs. Probably .update(squeue_prams) will be the last thing done, so
         #  will overried other inputs.
         #
-        
+        # @Format_fields: field names, direct from/to --Format= option
+        '''
+        # TODO: Extract GPUs from GRES, then add simple GPUs column.
+        # TODO: add sinfo_parms handler options: {pram:val, ...}, ["--opt=val", "--opt"], "--opt-val --opt"
+        #
+        # format fields translation dictionary. Currently borrowing from SACCT dict; might need to build a new one.
         if format_fields_dict is None:
             format_fields_dict = default_SLURM_types_dict
-#             format_fields.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus']})
-#             #
-#             ff_l = {ky.lower():val for ky,val in format_fields.items()}
-#             ff_u = {ky.upper():val for ky,val in format_fields.items()}
-#             format_fields.update(ff_l)
-#             format_fields.update(ff_u)
-#             del ff_l
-#             del ff_u
         #
-        sinfo_fields = {'--Format': ['NodeHost','Memory','AllocMem'],
+        # ugh... should not have hard-coded this list -- even a short one. But just doing this should
+        #. get us what we need. This will patch back to provide backwards compatibility.
+        if Format_fields is None or (isinstance(Format_fields, str) and Format_fields.lower() in ('mem', 'memory')):
+            #Format_fields = ['NodeHost','Memory','AllocMem']
+            Format_fields = self.format_fields_mem
+        if (isinstance(Format_fields, str) and Format_fields.lower() in ('node', 'nodes')):
+            Format_fields = self.format_fields_node
+        #
+        sinfo_fields = {'--Format': Format_fields,
                       '--partition': [partition]
                       }
         if isinstance(sinfo_prams, dict):
             sinfo_fields.update(sinfo_prams)
         #
-        sinfo_delim=';'
+        # QUESTION: When do we see a ";" delimiter? this would imply {ky};{vl}. this must be for --Format=
+        #.  which maybe can be "," or ";"  (???). Let's just see how it goes...
+        #sinfo_delim=';'
+        sinfo_delim='None'
         sinfo_str = 'sinfo '
         for ky,vl in sinfo_fields.items():
             delim=' '
             if ky.startswith('--'):
                 # long format
                 delim='='
+            if vl == '' or vl is None:
+                delim=''
             #
-            sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, f':{sinfo_delim},'.join(vl))
+            sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, ','.join(vl))
         #
         if verbose:
             print('*** sinfo_str: {}'.format(sinfo_str))
             print('*** sinfo_ary: {}'.format(sinfo_str.split()))
+            print('*** sinfo.sinfo_fields:{}'.format(sinfo_fields))
    
         self.__dict__.update({ky:vl for ky,vl in locals().items() if not ky in ('self', '__class__')})
-        self.set_sinfo_data()
-
-    def set_sinfo_data(self):
-        self.sinfo_data = self.get_sinfo_data()
-        self.dtype       = self.sinfo_data.dtype
-        
-    def get_sinfo_data(self, sinfo_str=None, sinfo_delim=None, verbose=False):
-        sinfo_str = sinfo_str or self.sinfo_str
-        sinfo_delim = sinfo_delim or self.sinfo_delim
         #
-        print(f'** sinfo: {sinfo_str}' )
+        if do_sinfo:
+            self.set_sinfo_data()
+        else:
+            print(f'** SINFO_str: {sinfo_str}')
+    #
+    # NOTE: I think we can also just do something like,
+    #. self.__getitem__ = self.sinfo_data.__getitem__
+    #  for some reason, I usually just write the passthrough.
+    def __getitem__(self, *args, **kwargs):
+        return self.sinfo_data.__getitem__(*args, **kwargs)
+    def __setitem__(self, *args, **kwargs):
+        return self.sinfo_data.__setitem__(*args, **kwargs)
+    def __iter__(self, *args, **kwargs):
+        return self.sinfo_data.iter(*args, **kwargs)
+    def __next__(self, *args, **kwargs):
+        return self.sinfo_data.next(*args, **kwargs)
+    #
+    def set_sinfo_data(self):
+        #
+        sinfo_data = self.get_sinfo_data()
+        gpus = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']), dtype=[('GPUS', int)])
+        #
+        self.sinfo_data = nrf.merge_arrays( (sinfo_data, gpus), asrecarray=True, flatten=True)
+        self.dtype      = self.sinfo_data.dtype
+    #        
+    def get_sinfo_data(self, sinfo_delim=None, verbose=None):
+        # , sinfo_str=None, sinfo_delim=None
+        #sinfo_str = sinfo_str or self.sinfo_str
+        #
+        # TODO: get gpus from ['GRES']; format is like, gpu:8(S:0-3)
+        verbose = verbose or self.verbose
+        sinfo_delim = sinfo_delim or self.sinfo_delim
+        sinfo_str = self.sinfo_str
+        sinfo_delim=None
+        #
+        if verbose:
+            print(f'** sinfo: {sinfo_str}' )
+        #
         sinfo_output = subprocess.run(sinfo_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         #cols = squeue_output[0].split(squeue_delim)
         #
         # there is a smarter way to do this, eg:
         cols = sinfo_output[0].split(sinfo_delim)
+        #cols += 'gpus'
+        #cols = sinfo_output[0].split()
         for k,cl in enumerate(cols):
             cl_0 = cl
             k_rep = 0
             while cols[k] in cols[0:k]:
                 cols[k] = f'{cl}_{k_rep}'
         if verbose:
+            print('*** sinfo_output: ')
+            for k,rw in enumerate(sinfo_output):
+                print(f'** [{k}] {rw}')
+                if k>5:
+                    break
+            #
             print('** cols: ', cols)
+            #
+            print('*** ***: --Format: ', self.sinfo_fields['--Format'])
         #
         return pandas.DataFrame(data=[[self.format_fields_dict.get(cl.lower(),str)(x)
                                   for x, cl in zip(rw.split(sinfo_delim),
                                 self.sinfo_fields['--Format']) ]
                                  for rw in sinfo_output[1:] if not len(rw.strip()) == 0],
                                    columns=cols).to_records()
+
+
+    #
+    @property
+    def total_nodes(self):
+        return len(self.sinfo_data)
+    #
+    @property
+    def total_cpus(self, cpus_col=None):
+        #
+        if isinstance(cpus_col, str):
+            cpus_col = self.sinfo_data[cpus_col]
+        if cpus_col is None:
+            cpus_col = self.sinfo_data['CPUS']
+        #
+        return numpy.sum(cpus_col)
+    
+    def get_cpu_totals(self, cpus_col=None, state_col=None):
+        #
+        if cpus_col is None:
+            cpus_col = self.sinfo_data['CPUS']
+        if state_col is None:
+            state_col = self.sinfo_data['STATE']
+        #
+        # python for-loop way:
+        #cpu_state_totals = {st:0 for st in numpy.unique(self.sinfo_data['STATE'])}
+        #for ncpus,st in self.sinfo_data[['CPUS', 'STATE']]:
+        #    cpu_state_totals[st] += int(ncpus)
+        #
+        #return cpu_state_totals
+        # or...
+        # numpy way:
+        #cpu_totals = {st:numpy.sum( (self.sinfo_data['CPUS'])[self.sinfo_data['STATE']==st]) for st in numpy.unique(self.sinfo_data['STATE'])}
+        unique_states=numpy.unique(state_col)
+        return {st:numpy.sum( (cpus_col)[state_col==st]) for st in unique_states}
+    #
+    @property
+    def cpu_totals(self):
+        return self.get_cpu_totals()
+    #
+    def is_node_available(self, state=None, unavailable_states=None, k_start=0, k_stop=4):
+        if unavailable_states is None:
+            unavailable_states = self.unavailable_states
+        if unavailable_states is None:
+            unavailable_states = ['down', 'drng', 'draining', 'boot', 'reboot', 'comp']
+        if state is None:
+            state = self['STATE']
+        #
+        unav_states = [st[k_start:k_stop] for st in unavailable_states]
+        #
+        if isinstance(state, str):
+            return state[k_start:k_stop] not in unav_states
+        elif isinstance(state, bytes):
+            return state[k_start:k_stop].decode() not in unav_states
+        else:
+            return numpy.invert([st[k_start:k_stop] in unav_states for st in state])
+        #
+        
+    #
+    def get_available_cpus(self, cpus_col=None, state_col=None, gpus_col=None, gres_col=None, count_cpus=True, count_gpus=False, count_available=True, unavailable_states=None):
+        '''
+        # @count_cpus, @count_gpus: include cpu-cpus, gpu-cpus. ie, count_cpus=True, count_gpus=False gives only cpus on cpu-type machines.
+        #. count_cpus=True count_gpus=True gives all CPUs; count_cpus=False count_gpus=True gives cpus supporting GPUs
+        '''
+        # TODO: initialize with GPU count; then separate GPU and CPU cpu counts.
+        #. we might also then handle the GPUs separately as an index.
+        #
+        # if gres_col is provided and gpus_col is not, create gpus_col from it. 
+        #. note, behavior is that gpus_col overrides gres_col
+        if gres_col is not None and gpus_col is None:
+            gpus_col = self.get_gpus(gres_col=gres_col)
+        if unavailable_states is None:
+            unavailable_states = self.unavailable_states
+        if unavailable_states is None:
+            unavailable_states = ['down', 'drng', 'draining', 'boot', 'reboot', 'comp']   
+        #
+        if cpus_col is None:
+            cpus_col = self.sinfo_data['CPUS']
+        if state_col is None:
+            state_col = self.sinfo_data['STATE']
+#         if gres_col is None:
+#             #gpus_col = numpy.array([('gpu' in gre) for gre in self.sinfo_data['GRES']])
+#             #gpus_col = self.sinfo_data['GRES']
+#             gres_col = self.sinfo_data['GRES']
+        if gpus_col is None:
+            gpus_col = self.sinfo_data['GPUS']
+        #
+#         avail_cpus = numpy.sum([ncpus for ncpus,st,gres in  numpy.array([cpus_col, state_col, gpus_col]).T
+#                         if not st[0:4] in ('down', 'drng') and not 'gpu' in gres])
+        #avail_cpus = numpy.sum([ncpus for ncpus,st,ngpus in  numpy.array([cpus_col, state_col, gpus_col]).T
+        #                if not (st[0:4] in [s[0:4] for s in unavailable_states] or ngpus>0)])
+        
+        #avail_cpus = numpy.sum(cpus_col[numpy.boolean_and(self.is_node_available(state_col), (gpus_col>0))] )
+        ix_cpus = numpy.logical_and(self['GPUS']==0, count_cpus)
+        ix_gpus = numpy.logical_and(self['GPUS']>0, count_gpus)
+        ix_avail = self.is_node_available(self['STATE'])
+        #
+#         if not count_cpus:
+#             ix_cpus = numpy.invert(ix_cpus)
+#         if not count_gpus:
+#             ix_gpus = numpy.invert(ix_gpus)
+        if not count_available:
+            ix_avail = numpy.invert(ix_avail)
+        #
+        #ix = numpy.logical_and(self.is_node_available(self['STATE']),  self['GPUS']==0)
+        ix = numpy.logical_or(ix_cpus, ix_gpus)
+        ix = numpy.logical_and(ix, ix_avail)
+        avail_cpus = numpy.sum(self['CPUS'][ix] )
+
+        return avail_cpus
+    #
+    def get_available_gpus(self, cpus_col=None, state_col=None, gpus_col=None, gres_col=None, down_state=False):
+        # TODO: initialize with GPU count; then separate GPU and CPU cpu counts.
+        #. we might also then handle the GPUs separately as an index.
+        #
+        # if gres_col is provided and gpus_col is not, create gpus_col from it. 
+        #. note, behavior is that gpus_col overrides gres_col
+        if gres_col is not None and gpus_col is None:
+            gpus_col = self.get_gpus(gres_col=gres_col)
+        #
+        if cpus_col is None:
+            cpus_col = self.sinfo_data['CPUS']
+        if state_col is None:
+            state_col = self.sinfo_data['STATE']
+        if gpus_col is None:
+            gpus_col = self.sinfo_data['GPUS']
+        #
+        ix = numpy.array([st[0:4] not in ('down', 'drng') and ng>0 for st,ng in numpy.array([state_col, gpus_col]).T])
+                #
+        if down_state:
+            ix = numpy.invert(ix)
+        
+        avail_cpus = {'gpus':numpy.sum(gpus_col[ix]), 'cpus':numpy.sum(cpus_col[ix])}
+        #
+        return avail_cpus
+    #
+    @property
+    def total_gpus(self):
+        return numpy.sum(self.get_gpus_col())
+    #
+    def get_gpus_col(self, gres_col=None):
+        '''
+        # inputs:
+        # @gres_col: column of GRES data that will be parsed for GPU counts. Default is self.sinfo_data['GRES']
+        #
+        # parse gres_col to generate a column of GPU counts.
+        '''
+        # we might consider burning some non-optimal cycles and do this rigorously if the GRES format turns
+        #. out to be difficult in some instances.
+        if gres_col is None:
+            gres_col = self.sinfo_data['GRES']
+            #gres_col = self.sinfo_data['TRES']
+        #
+        # an optimized solution, that will probalby work most of the time is like:
+        # But... for STATE=='drain*', GRES==gpu:8
+        # ugh...
+#         return numpy.array([0 if not 'gpu' in s else int(s[ (s.index('gpu:')+4) : (s.index('(', s.index('gpu:')+4) ) ]) 
+#                              for s in gres_col ])
+        return numpy.array([0 if not 'gpu' in s else int(s[ (s.index('gpu:')+4) : (len(s) if not '(' in s else s.find('(', s.index('gpu:')+4) ) ]) 
+                             for s in gres_col ])
+    #
+    
+    
+    
