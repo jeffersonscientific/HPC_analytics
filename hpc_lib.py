@@ -19,6 +19,7 @@ import h5py
 #
 import subprocess
 import shlex
+import dataclasses
 #
 #import numba
 import pandas
@@ -1319,8 +1320,8 @@ class SACCT_data_handler(object):
             ax2.plot(A_jobs[:,1], numpy.dot(A_jobs,p_jobs), ls='--', lw=3, 
                      label=f'trend: b={p_jobs[1]:.2f} jobs/day$')
             #
-            del A_cpus, A_jobs, p_cpus, p_jobs
-                 
+            #del A_cpus, A_jobs, p_cpus, p_jobs
+            del A_cpus, A_jobs     
         
         #
         ax1.plot(T[-len(z_cpus_smooth):], z_cpus_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
@@ -1342,7 +1343,22 @@ class SACCT_data_handler(object):
         for ax in (ax1, ax2, ax3, ax4):
             ax.legend(loc=0)
         #
-        return fg
+        # TODO: return some form of (fg, qs_cpus, qs_jobs).
+        #. look at NamedTuples, dataclass.dataclass, and namedtouples
+        # https://stackoverflow.com/questions/35988/c-like-structures-in-python
+        # can I nest the declaration?
+        #
+        @dataclasses.dataclass
+        class REP:
+            qs_cpus: list
+            qs_jobs: list
+            trend_cpus: float
+            trend_jobs: float
+            fig: plt.figure
+        
+        
+        #return fg
+        return REP(qs_cpus, qs_jobs, p_cpus[1], p_jobs[1], fg)
         
     def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, jobs_summary=None, wedgeprops=None, autopct=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
@@ -1398,7 +1414,18 @@ class SACCT_data_handler(object):
         #
         # TODO: return all the data sets in a dict?
         # return {'fg':fg, 'pie_cpuh_data':pie_cpuh_data, 'pie_jobs_data':pie_jobs_data, etc...}
-        return fg
+        #return fg
+        @dataclasses.dataclass
+        class REP:
+            group_by: str
+            pie_cpuh: numpy.array
+            pie_jobs: numpy.array
+            fig: plt.figure
+        #
+        #print('*** DEBUG type(): ', type(pie_cpuh_data))
+        # TODO: This pie_cpuh_data and pie_jobs_data are currently a list of arrays of patches or something,
+        #. which is not useful. we want to pull the aggregated data.
+        return REP(group_by, pie_cpuh_data, pie_jobs_data, fg)
 
     def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10),
      cpu_usage=None, verbose=0, foutname=None, periodic_projection='rectilinear', polar=False):
@@ -3820,7 +3847,7 @@ def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, autopct='%1.1
     #
     pie_data = ax.pie(pi_vls, labels=pi_lbls, autopct=autopct, wedgeprops=wedgeprops)
     #
-    return pie_data
+    return pi_data
 #
 def input_date_to_num(x):
     '''
