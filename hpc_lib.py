@@ -2015,20 +2015,29 @@ class SQUEUE_obj(object):
     #  uses squeue. We *could* use SACCT_obj and just limit to --State=running,pending
     #. but it seems that sacct is much slower than squeue.
     #
-    def __init__(self, partition='serc', format_fields_dict=None, squeue_prams=None, verbose=False):
+    def __init__(self, partition='serc', format_fields_dict=None, squeue_prams=None, format_fields=None, verbose=False, squeue_delim='*', **kwargs):
         #
         # @squeue_prams: additional or replacement fields for squeue_fields variable, eg parameters
         #. to pass to squeue. Presently, --Format and --partition are specified. some options might also
         #. be allowed as regular inputs. Probably .update(squeue_prams) will be the last thing done, so
         #  will overried other inputs.
+        # @format_fields: format columns/fields, eg. argument to --Format={format_fields}
         #
         # TODO: add ***kwargs and handle syantax like SQU_{something} to add to squeue_fields, etc.
+
+        for kw,vl in kwargs.items():
+            if kw.startswith('SQUEUE_'):
+                squeue_fields[kw[7:]] = vl
         #
-        # TODO: use sinfo or SH_PART to get total resources (cpus, gpus) for partition=
+        # TODO: this was originally intended to be used with a partition={} option, but let's clean
+        #.  up the code to be more general.
         SP = SH_PART_obj()
-        total_cpus = SP.get_total_cpus(partitions=partition)
-        total_gpus = SP.get_total_gpus(partitions=partition)
-        
+        if not partition is None:
+            total_cpus = SP.get_total_cpus(partitions=partition)
+            total_gpus = SP.get_total_gpus(partitions=partition)
+#         if isinstance(partition,str):
+#             partition = partition.split(',')
+        #
         if format_fields_dict is None:
             format_fields_dict = default_SLURM_types_dict
 #             format_fields.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus']})
@@ -2040,26 +2049,40 @@ class SQUEUE_obj(object):
 #             del ff_l
 #             del ff_u
         #
-        squeue_fields = {'--Format': ['jobid', 'jobarrayid', 'partition', 'name', 'username', 'timeused',
-                                      'timeleft', 'numnodes', 'numcpus', 'numtasks', 'state', 'nodelist'],
-                      '--partition': [partition]
+        if format_fields is None:
+            #
+            # 
+            format_fields = ['jobid', 'jobarrayid', 'partition', 'name:50', 'username', 'timeused',
+                                      'timeleft', 'numnodes', 'numcpus', 'numtasks', 'state', 'nodelist:50','tres-alloc:150']
+        if isinstance(format_fields, bytes):
+            format_fields = format_fields.decode()
+        if isinstance(format_fields, str):
+            format_fields = format_fields.split(',')
+        #
+        format_fields_str = ','.join([(f'{s}{squeue_delim}' if ':' in s else f'{s}:{squeue_delim}') for s in format_fields[:-1]] + [format_fields[-1]])
+        #format_fields_str = f'"{format_fields_str}"'
+        print(f'*** *** DEBUG format_fields_str: {format_fields_str}')
+        #
+        squeue_fields = {'--Format': format_fields_str,
+                      '--partition': partition
                       }
         if isinstance(squeue_prams, dict):
             squeue_fields.update(squeue_prams)
         #
-        squeue_delim=';'
-        sinfo_str = 'squeue '
+        squeue_str = 'squeue '
         for ky,vl in squeue_fields.items():
             delim=' '
             if ky.startswith('--'):
                 # long format
                 delim='='
             #
-            sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, f':{squeue_delim},'.join(vl))
+            #sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, f'{squeue_delim},'.join(vl))
+            #squeue_str = '{} {}{}{}'.format(squeue_str, ky, delim, ','.join(vl))
+            squeue_str = '{} {}{}{}'.format(squeue_str, ky, delim, vl)
         #
         if verbose:
-            print('*** sinfo_str: {}'.format(sinfo_str))
-            print('*** sinfo_ary: {}'.format(sinfo_str.split()))
+            print('*** sinfo_str: {}'.format(squeue_str))
+            print('*** sinfo_ary: {}'.format(squeue_str.split()))
         #
         # TODO:
         # port some of these bits to class-scope function calls, for class portability
@@ -2078,16 +2101,31 @@ class SQUEUE_obj(object):
     def __setitem__(self, *args, kwargs):
         return self.squeue_data.__setitem__
     #
-    def get_squeue_data(self, sinfo_str=None, squeue_delim=None, verbose=False):
-        sinfo_str = sinfo_str or self.sinfo_str
+    def get_squeue_data(self, squeue_str=None, squeue_delim=None, verbose=None):
+        '''
+        #
+        # fetch squeue data; do some processing; return a numpy array?
+        #
+        '''
+        #
+        #NOTE: pretty sure there is no delimiter option for squeue.
+        #, squeue_delim=None
+        #
+        verbose = verbose or self.verbose
+        #
+        squeue_str = squeue_str or self.squeue_str
         squeue_delim = squeue_delim or self.squeue_delim
         #
-        print(f'** squeue: {sinfo_str}' )
-        squeue_output = subprocess.run(sinfo_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
-        #cols = squeue_output[0].split(squeue_delim)
+        if verbose:
+            print(f'** squeue: {squeue_str}' )
+            print(f'** split(): {squeue_str.split()}' )
+        squeue_output = subprocess.run(squeue_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
+        cols = squeue_output[0].replace(' ', '').split(squeue_delim)
         #
-        # there is a smarter way to do this, eg:
-        cols = squeue_output[0].split(squeue_delim)
+        print(f'** A row: \n{squeue_output[1]}')
+        # column names:
+        #. note, some --Format fields return the same column name.
+        #cols = squeue_output[0].split()
         for k,cl in enumerate(cols):
             cl_0 = cl
             k_rep = 0
@@ -2096,11 +2134,30 @@ class SQUEUE_obj(object):
         if verbose:
             print('** cols: ', cols)
         #
-        return pandas.DataFrame(data=[[self.format_fields_dict.get(cl.lower(),str)(x)
-                                  for x, cl in zip(rw.split(squeue_delim),
-                                self.squeue_fields['--Format']) ]
+        squeue_Format = self.format_fields
+        # TODO: handle odd fields, like 'tres_alloc:150', nodelist, etc.
+        #. we want to parse tres_alloc and add a column for each (interesting...) key=val pair.
+        #. then maybe we want to parse the nodelist to generate a full list of nodes?
+        #. or maybe we do that in applications, since it will make for a messy array.
+        #. - tres_alloc will be like "cpu=32,mem=16G,node=1,billing=36"
+        #. - for nodelist: 
+        #.     1) find "-" and translate name_[1-5] to ==> name_[1,2,3,4,5]
+        #.     2) then find [ and transform to ==> name_1, name_2, ...
+        #
+        # put the initial squeue output into a DF:
+        print(f'*** DEBUG: {len(squeue_output[1].split())}, {len(squeue_Format)}')
+        print(f'*** DEBUG: {squeue_output[1].split()}')
+        squeue_data = pandas.DataFrame(data=[[self.format_fields_dict.get(cl.split(':')[0].lower(),str)(x)
+                                  for x, cl in zip(rw.split(),squeue_Format) ]
                                  for rw in squeue_output[1:] if not len(rw.strip()) == 0],
-                                   columns=cols).to_records()
+                                   columns=cols)
+        # now,compute mem, gpus, cpus? from tres:
+        
+#         return pandas.DataFrame(data=[[self.format_fields_dict.get(cl.split(':')[0].lower(),str)(x)
+#                                   for x, cl in zip(rw.split(),squeue_Format) ]
+#                                  for rw in squeue_output[1:] if not len(rw.strip()) == 0],
+#                                    columns=cols).to_records()
+        return squeue_data.to_records()
     #
     def get_active_jobs(self, *args, **kwargs):
         # TODO: get some notes, comments, and function description in here. What is this for???
@@ -4047,7 +4104,7 @@ def fg_time_labels_to_dates(ax, dt_epoch=None):
 #. want a more versatile and multi-purpose SINFO class tool. Made the mistake of hard-coding the initial-purpose
 #. (albeit short...) Format list with [NodeHost, Memory, AllocMem]. No real harm just leaving those, for backward
 #. compatibility, but it might be better to just build a new, more specific class case, like:
-# class SINFO_NODES_obj(object):
+# NODES_obj(object):
 # And really, there is a bit more custom purpose written into SINFO_obj() than I really want to work around, so...
 #. (and I'm just going to copy-paste repeated code, rather than inherit). There's not a lot of it, and this will end up
 #. being a more generalized, versatile class.
@@ -4091,7 +4148,7 @@ class SINFO_obj(object):
         # @sinfo_prams: additional or replacement fields for squeue_fields variable, eg parameters
         #. to pass to squeue. Presently, --Format and --partition are specified. some options might also
         #. be allowed as regular inputs. Probably .update(squeue_prams) will be the last thing done, so
-        #  will overried other inputs.
+        #  will override other inputs.
         #
         # @Format_fields: field names, direct from/to --Format= option
         '''
@@ -4211,8 +4268,14 @@ class SINFO_obj(object):
     def total_nodes(self):
         return len(self.sinfo_data)
     #
+    # 15 July 2025, yoder:
+    #.  oops. combindd @property decorator with input prams on total_cpus(). break this up so that we can have both
+    #.  the property and the function by defining get_total_cpus().
     @property
-    def total_cpus(self, cpus_col=None):
+    def total_cpus(self):
+        return self.get_total_cpus(cpus_col='CPUS')
+    
+    def get_total_cpus(self, cpus_col=None):
         #
         if isinstance(cpus_col, str):
             cpus_col = self.sinfo_data[cpus_col]
@@ -4267,6 +4330,8 @@ class SINFO_obj(object):
         '''
         # @count_cpus, @count_gpus: include cpu-cpus, gpu-cpus. ie, count_cpus=True, count_gpus=False gives only cpus on cpu-type machines.
         #. count_cpus=True count_gpus=True gives all CPUs; count_cpus=False count_gpus=True gives cpus supporting GPUs
+        # @count_available: count (un)available CPUs. count_available=False is like "count_unavailable", the inverse of the True
+        #. output.
         '''
         # TODO: initialize with GPU count; then separate GPU and CPU cpu counts.
         #. we might also then handle the GPUs separately as an index.
