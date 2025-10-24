@@ -10,6 +10,10 @@ data/
 *.avi
 *.pyc
 *~
+#
+#These notebooks and modules:
+sacct_template.ipynb
+Untitled.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
