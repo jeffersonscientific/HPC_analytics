@@ -24,6 +24,9 @@ import dataclasses
 #import numba
 import pandas
 #
+#2025-10-24:
+# belated updage: dataclass has been added, and is kind of important to newer notebooks.
+#
 # 2023-12-11 yoder:
 # TODO: add class sinfo_nodes() (or something like it...), based on this query:
 # sinfo --Node --partition=serc --Format=nodelist,nodeaddr,available,cpus,cpusstate,memory,gres,gresused:35,statecomplete,time
