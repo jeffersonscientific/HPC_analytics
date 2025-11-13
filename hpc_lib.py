@@ -891,13 +891,17 @@ class SACCT_data_handler(object):
         '''
         qs = numpy.array(qs)
         #bin_size = bin_size or .1
+        # 2025 11 13 yoder:
+        if jobs_summary is None:
+            jobs_summary=self.jobs_summary
         if fg is None:
             fg = plt.figure(figsize=(20,8))
             for k in range(1,3):
                 fg.add_subplot(1,2,k)
         #
         if NCPUS is None:
-            NCPUS=self['NCPUS']
+            NCPUS=jobs_summary['NCPUS']
+
         #
         # NOTE: this might break if (fg is None), even if ax1,2,3,4 are provided)
         #ax1, ax2, ax3, ax4 = fg.get_axes()
@@ -921,7 +925,7 @@ class SACCT_data_handler(object):
             ax3.plot([0., x, x], [y, y, 0.], ls='--', lw=2., label=f'{y*100.}th %: {x:.0f} {cpu_lbl}' )
         #
         # Pies:
-        pi_cpu = get_pie_slices(sum_data=self['Elapsed']*NCPUS,
+        pi_cpu = get_pie_slices(sum_data=jobs_summary['Elapsed']*NCPUS*24.,
                                  slice_data=self[group_by])
         pi_cpu_lbls = pi_cpu['name'].astype(str)
         pi_cpu_vls  = pi_cpu['value'].astype(str)
