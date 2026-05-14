@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # classes, functions, etc. for LaTex --> PDF based reporting.
 #  This was an early phase development of reporting capabilites, and it works
 #  (maybe with a few tweaks...), but it is probably much easier to use the newer
@@ -5,6 +6,12 @@
 #  In the end, both are a a bit limited and clunky. Both suffer from serial limitaions --
 #  meaninign taht some formatting operations need to be done in a certain order.
 #  python-ppxt is, for most people, probably easier and definitely supported by CLAUDE.
+=======
+# functions, classes, and other helper bits for HPC_analytics notebooks and other libs.
+# This is an earlier approach to reports that export LATEX and convers to PDF.
+# Newer models use python-ppxt to write PowerPoint directly. It is not clear which is acutally
+# the better approach.
+>>>>>>> 1802204 (committing some changes to hpc_lib and hpc_reports.)
 #
 import os
 import sys

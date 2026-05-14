@@ -206,6 +206,8 @@ default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':
 #   entries to simplify searching.
 default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus', 'gpus', 'GPUS', 'MEMORY']})
 default_SLURM_types_dict.update({'TIMELEFT':elapsed_time_2_day, 'TIMEUSED':elapsed_time_2_day})
+# 20260424 yoder: SQUEUE MIN_MEMORY and friends:
+default_SLURM_types_dict.update({'MIN_MEMORY': int})  # kmg_to_num() ?
 dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict.items()}
 dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict.items()} )
 default_SLURM_types_dict.update(dst_ul)
@@ -1525,9 +1527,6 @@ class SACCT_data_handler(object):
         ax1.legend(loc=0)
         ax2.legend(loc=0)
         #
-        # TODO: return all the data sets in a dict?
-        # return {'fg':fg, 'pie_cpuh_data':pie_cpuh_data, 'pie_jobs_data':pie_jobs_data, etc...}
-        #return fg
         @dataclasses.dataclass
         class REP:
             group_by: str
@@ -1758,6 +1757,167 @@ class SACCT_data_handler(object):
         #
         return distributions
     #
+    def report_topologies_cpu_compute(self, SACCT_obj=None, quantiles=None,
+       fg=None, ax1=None, ax2=None, ax3=None):
+        '''
+        # SACCT_obj: can be  a SACCT_obj or a SACCT_obj.summary_data (I think... at least, that is the intention).
+        '''
+        if SACCT_obj is None:
+            SACCT_obj=self
+        quantiles = quantiles or numpy.array([.5, .75, .9])
+        #
+        cpu_hours_dist   = numpy.zeros(len(numpy.unique(SACCT_obj['NCPUS'])), dtype=[('NCPUS', '<i8'),
+                                                                ('hours', '<f8'), ('totalcpu', '<f8')])
+        cpu_hours_dist['NCPUS'] = numpy.unique(SACCT_obj['NCPUS'])
+
+        node_hours_dist = numpy.zeros(len(numpy.unique(SACCT_obj['NNodes'])), dtype=[('NNodes', '<i8'),
+                                                                        ('hours', '<f8'), ('totalcpu', '<f8')])
+        node_hours_dist['NNodes'] = numpy.unique(SACCT_obj['NNodes'])
+        #
+        #unique_ntasks = numpy.unique((SACCT_obj['NTasks'])[SACCT_obj['NTasks']>0])
+        unique_ntasks = numpy.unique((SACCT_obj['NTasks']))
+        tasks_hours_dist = numpy.zeros(len(unique_ntasks), dtype=[('NTasks', '<i8'),
+                                                                        ('hours', '<f8'), ('totalcpu', '<f8')])
+        tasks_hours_dist['NTasks'] = unique_ntasks
+        # Ok... This looks dumb, but I'm not sure it is. We want CDFs of CPUs*Hours for uniqe values of NCPUS, NNodes,
+        # NTASKS. So there is a way to do this like a regular CDF, by sorting, but we still end up with an extra axis
+        # So we have to aggregate each group somehow. This is probably as good as any other, once you look under
+        # the hood. The dictionary objects are basically {unique_Value: sum_of_CPUH}. Once we create those, 
+        # we can assign them in a single pass through SACCT_obj
+        #
+        # also, this will not be the fastest way to do this, but it should be fairly straight forward.
+        ix_cpus  = {n:k for k,n in enumerate(cpu_hours_dist['NCPUS'])}
+        ix_nodes = {n:k for k,n in enumerate(node_hours_dist['NNodes'])}
+        ix_tasks = {n:k for k,n in enumerate(tasks_hours_dist['NTasks'])}
+        for rw in SACCT_obj:
+            #print('** ')
+            this_cpuh = rw['Elapsed']*rw['NCPUS']*24.
+            for var,ix,cl in [(cpu_hours_dist, ix_cpus, 'NCPUS'), (node_hours_dist, ix_nodes, 'NNodes'),
+                            (tasks_hours_dist, ix_tasks, 'NTasks')]:
+                if numpy.isnan(rw[cl]):
+                    continue
+                var['hours'][ix[int(rw[cl])]] += this_cpuh
+                var['totalcpu'][ix[int(rw[cl])]] += rw['TotalCPU']
+        #
+        tasks_hours_dist = tasks_hours_dist[tasks_hours_dist['NTasks']>0]
+        #
+        cpu_hours_dist['hours'] = numpy.cumsum(cpu_hours_dist['hours'])
+        node_hours_dist['hours'] = numpy.cumsum(node_hours_dist['hours'])
+        tasks_hours_dist['hours'] = numpy.cumsum(tasks_hours_dist['hours'])
+        #
+        #qs = numpy.array([.5, .75, .9])
+        #qs = quantiles
+
+        if fg is None:
+            fg = plt.figure(figsize=(14,6))
+        #
+        if ax1 is None:
+            ax1 = fg.add_subplot(1,3,1)
+        if ax2 is None:
+            ax2 = fg.add_subplot(1,3,2)
+        if ax3 is None:
+            ax3 = fg.add_subplot(1,3,3)
+        #
+        axs = [ax1, ax2, ax3]
+        #
+        fg.suptitle('CPU-hours CDFs')
+        for ax,ttl, in zip(axs, ['Per NCPU', 'Per Node', 'Per Task']):
+            ax.set_title(ttl)
+            ax.grid()
+            #
+        X = cpu_hours_dist['NCPUS']
+        Y = cpu_hours_dist['hours']
+        #
+        quants_ncpus = numpy.nanmax(Y)*quantiles
+        quants_ncpus_x = numpy.zeros(len(quants_ncpus))
+        ax = ax1
+        ax.plot(X,Y)
+        ks = Y.searchsorted(quants_ncpus)
+        #
+        ax.set_xlabel('NCPUs', size=16)
+        ax.set_ylabel('$CPUs \cdot hours$', size=16)
+        for k,(j,y) in enumerate(zip(Y.searchsorted(quants_ncpus), quants_ncpus)):
+            x = numpy.mean(X[j-1:j+1])
+            quants_ncpus_x[k] = x
+            ax.plot([x,x,numpy.min(X)], [numpy.min(Y),y,y], ls='-', label=f'q: {quantiles[k]}={x}')
+        ax.legend(loc=0)
+        ###########
+        #
+        X,Y = node_hours_dist['NNodes'], node_hours_dist['hours']
+        quants_nnodes = numpy.nanmax(Y)*quantiles
+        quants_nnodes_x = numpy.zeros(len(quants_nnodes))
+        ax = ax2
+        #
+        ax.plot(X,Y)
+        ax.set_xlabel('N_Nodes', size=16)
+        #ax.set_ylabel('$Nodes \cdot hours$', size=16)
+        for k,(j,y) in enumerate(zip(node_hours_dist['hours'].searchsorted(quants_nnodes), quants_nnodes)):
+            x = numpy.mean(X[j-1:j+1])
+            quants_nnodes_x[k] = x
+            ax.plot([x,x,numpy.min(X)], [numpy.min(Y),y,y], ls='-', label=f'q: {quantiles[k]}={x}')
+        ax.legend(loc='lower right')
+        ################
+        #
+        X,Y = tasks_hours_dist['NTasks'], tasks_hours_dist['hours']
+        quants_ntasks = numpy.nanmax(Y)*quantiles
+        quants_ntasks_x = numpy.zeros(len(quants_ntasks))
+        ax = ax3
+        #
+        ax.plot(X,Y)
+        ax.set_xlabel('N_Tasks', size=16)
+        #ax.set_ylabel('$Tasks \cdot hours$', size=16)
+        for k,(j,y) in enumerate(zip(Y.searchsorted(quants_ntasks), quants_ntasks)):
+            x = numpy.mean(X[j-1:j+1])
+            quants_ntasks_x[k] = x
+            ax.plot([x,x,numpy.min(X)], [numpy.min(Y),y,y], ls='-', label=f'q: {quantiles[k]}={x}')
+        ax.legend(loc='lower right')
+        #fg.savefig(os.path.join(img_path, 'jobs_topology_cdfs.jpg'))
+        #
+        # now single cpu, task, etc. Jobs:
+        total_cpu_hours = numpy.sum(SACCT_obj['NCPUS']*SACCT_obj['Elapsed'])*24.
+        for x_var in ['NCPUS', 'NNodes', 'NTasks']:
+            #
+            SO = SACCT_obj[SACCT_obj[x_var]==1]
+            cpuhours_one_task = numpy.sum(SO['NCPUS']*SO['Elapsed'])*24.
+            #cpuhours_all      = numpy.sum(SACCT_obj['NCPUS']*SACCT_obj['Elapsed'])*24.
+            print(f'** {x_var}:: one: {cpuhours_one_task:.2f}, all: {total_cpu_hours:.2f}: fract: {cpuhours_one_task/total_cpu_hours:.2f}')
+            #
+            globals()[f'{x_var}_one']   = cpuhours_one_task
+            globals()[f'{x_var}_fract'] = cpuhours_one_task/total_cpu_hours
+            #
+            #print('** variables:')
+            #print(f'** *  {x_var}_one: {globals()[f"{x_var}_one:"]}')
+
+        #####
+        #
+        #
+        ####
+        @dataclasses.dataclass
+        class REP:
+            quantiles: numpy.array
+            quantiles_ntasks: numpy.array
+            quantiles_nnodes: numpy.array
+            quantiles_ncpus: numpy.array
+            cpu_hours_dist: numpy.array
+            node_hours_dist: numpy.array
+            tasks_hours_dist: numpy.array
+            cpuh_one_NTASKS: float
+            cpuh_one_NNODES: float
+            cpuh_one_NCPUS: float
+            cpuh_total: float
+            #pie_cpuh: numpy.array
+            #pie_jobs: numpy.array
+            fig: plt.figure
+        #
+        #print('*** DEBUG type(): ', type(pie_cpuh_data))
+        # TODO: This pie_cpuh_data and pie_jobs_data are currently a list of arrays of patches or something,
+        #. which is not useful. we want to pull the aggregated data.
+        return REP(quantiles, quants_ntasks_x, quants_nnodes_x, quants_ncpus_x,
+         cpu_hours_dist, node_hours_dist, tasks_hours_dist, 
+         NTasks_one, NNodes_one, NCPUS_one, total_cpu_hours, fg)
+
+
+
 
 class SACCT_data_direct(SACCT_data_handler):
     # 3 Oct 2022 yoder: skip Jobname; we wrestled a few hours with this because somebody decided
@@ -2116,7 +2276,8 @@ class SQUEUE_obj(object):
     #  uses squeue. We *could* use SACCT_obj and just limit to --State=running,pending
     #. but it seems that sacct is much slower than squeue.
     #
-    def __init__(self, partition='serc', format_fields_dict=None, squeue_prams=None, format_fields=None, verbose=False, squeue_delim='*', **kwargs):
+    def __init__(self, partition='serc', format_fields_dict=None, squeue_prams=None, \
+           format_fields=None, verbose=False, squeue_delim='*', **kwargs):
         #
         # @squeue_prams: additional or replacement fields for squeue_fields variable, eg parameters
         #. to pass to squeue. Presently, --Format and --partition are specified. some options might also
@@ -2132,6 +2293,7 @@ class SQUEUE_obj(object):
         #
         # TODO: this was originally intended to be used with a partition={} option, but let's clean
         #.  up the code to be more general.
+        # TODO also: SH_PART_obj() should be replaced with SINFO_obj()
         SP = SH_PART_obj()
         if not partition is None:
             total_cpus = SP.get_total_cpus(partitions=partition)
@@ -2153,6 +2315,7 @@ class SQUEUE_obj(object):
         if format_fields is None:
             #
             # 
+            # TODO: add , 'min_memory' , and gpus.
             format_fields = ['jobid', 'jobarrayid', 'partition', 'name:50', 'username', 'timeused',
                                       'timeleft', 'numnodes', 'numcpus', 'numtasks', 'state', 'nodelist:50','tres-alloc:150']
         if isinstance(format_fields, bytes):
@@ -2162,7 +2325,8 @@ class SQUEUE_obj(object):
         #
         format_fields_str = ','.join([(f'{s}{squeue_delim}' if ':' in s else f'{s}:{squeue_delim}') for s in format_fields[:-1]] + [format_fields[-1]])
         #format_fields_str = f'"{format_fields_str}"'
-        print(f'*** *** DEBUG format_fields_str: {format_fields_str}')
+        if verbose:
+            print(f'*** *** DEBUG format_fields_str: {format_fields_str}')
         #
         squeue_fields = {'--Format': format_fields_str,
                       '--partition': partition
@@ -2223,7 +2387,12 @@ class SQUEUE_obj(object):
         squeue_output = subprocess.run(squeue_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         cols = squeue_output[0].replace(' ', '').split(squeue_delim)
         #
-        print(f'** A row: \n{squeue_output[1]}')
+        # DEBUGGING:
+        self.len_squeue = len(squeue_output)
+        #
+        if verbose:
+            print(f'** A row: \n{squeue_output[1]}')
+        #
         # column names:
         #. note, some --Format fields return the same column name.
         #cols = squeue_output[0].split()
@@ -2246,11 +2415,14 @@ class SQUEUE_obj(object):
         #.     2) then find [ and transform to ==> name_1, name_2, ...
         #
         # put the initial squeue output into a DF:
-        print(f'*** DEBUG: {len(squeue_output[1].split())}, {len(squeue_Format)}')
-        print(f'*** DEBUG: {squeue_output[1].split()}')
+        if verbose:
+            print(f'*** DEBUG: output: {squeue_output[1]}')
+            print(f'*** DEBUG: {len(squeue_output[1].split(squeue_delim))}, {len(squeue_Format)}')
+            print(f'*** DEBUG: {squeue_output[1].split()}')
+        #
         squeue_data = pandas.DataFrame(data=[[self.format_fields_dict.get(cl.split(':')[0].lower(),str)(x)
-                                  for x, cl in zip(rw.split(),squeue_Format) ]
-                                 for rw in squeue_output[1:] if not len(rw.strip()) == 0],
+                                  for x, cl in zip(rw.split(squeue_delim),squeue_Format) ]
+                                  for rw in squeue_output[1:] if not len(rw.strip()) == 0],
                                    columns=cols)
         # now,compute mem, gpus, cpus? from tres:
         
@@ -4308,6 +4480,11 @@ class SINFO_obj(object):
     # NOTE: I think we can also just do something like,
     #. self.__getitem__ = self.sinfo_data.__getitem__
     #  for some reason, I usually just write the passthrough.
+    def __iter__(self, *args, **kwargs):
+        return self.sinfo_data.__iter__
+    #
+    def __len__(self, *args, **kwargs):
+        return len(self.sinfo_data)
     def __getitem__(self, *args, **kwargs):
         return self.sinfo_data.__getitem__(*args, **kwargs)
     def __setitem__(self, *args, **kwargs):
@@ -4320,9 +4497,17 @@ class SINFO_obj(object):
     def set_sinfo_data(self):
         #
         sinfo_data = self.get_sinfo_data()
-        gpus = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']), dtype=[('GPUS', int)])
         #
-        self.sinfo_data = nrf.merge_arrays( (sinfo_data, gpus), asrecarray=True, flatten=True)
+        # this is nrf.merge_arrays() failing. CLAUDE recommends this fix:
+        # TODO: TEst it!
+        #gpus = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']), dtype=[('GPUS', int)])
+        #self.sinfo_data = nrf.merge_arrays( (sinfo_data, gpus), asrecarray=True, flatten=True)
+        gpus_vals = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']))
+        self.sinfo_data = nrf.append_fields(
+            sinfo_data, 'GPUS', gpus_vals,
+            dtypes=int, usemask=False, asrecarray=True
+            )
+        #
         self.dtype      = self.sinfo_data.dtype
     #        
     def get_sinfo_data(self, sinfo_delim=None, verbose=None):
@@ -4379,6 +4564,14 @@ class SINFO_obj(object):
     @property
     def total_cpus(self):
         return self.get_total_cpus(cpus_col='CPUS')
+    @property
+    def total_cpu_cpus(self):
+        #return self.get_total_cpus(cpus_col=self['CPUS'][self.['GPUS']==0])
+        return numpy.sum(self['CPUS'][self['GPUS']==0])
+    @property
+    def total_gpu_cpus(self):
+        #return self.get_total_cpus(cpus_col=self['CPUS'][self.['GPUS']>0])
+        return numpy.sum(self['CPUS'][self['GPUS']>0])
     
     def get_total_cpus(self, cpus_col=None):
         #
