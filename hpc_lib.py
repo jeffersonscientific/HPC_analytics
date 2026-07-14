@@ -189,6 +189,9 @@ def space_replacer(s, space_to='_', space_ord=32):
 #
 #
 dtm_handler_default = str2date_num
+#
+# ############
+# Define SLURM_types_dict: Use this to convert SACCT and SQUEUE data to the correcty Python/Numpy type.
 # TODO: write this as a class, inherit from dict, class(dict):
 default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
         'Timelimit':elapsed_time_2_day,
@@ -218,7 +221,87 @@ default_SLURM_types_dict.update({'Account':str})
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
 #
+def get_sacct_direct_or_hdf5(partition='serc',
+                  group=None,
+                  user=None,
+                  end_dtm = None,
+                  report_len_days = 180,
+                  start_dtm=None,
+                  delim_sacct='*',
+                  verbose=0,
+                  sacct_data_path=None,
+                  sacct_h5_file=None,
+                  n_cpu=None
+                  ):
+    #
+    end_dtm = end_dtm or dtm.datetime.now()
+    end_date = end_dtm.date()
+    
+    #
+    # NOTE: providing start_dtm will override report_len_days
+    if start_dtm is None:
+        start_date = end_date - dtm.timedelta(days=report_len_days)
+    else:
+        if isinstance(start_dtm, dtm.datetime):
+            start_date=start.dtm.date()
+        if isinstance(start_dtm, str):
+            start_date = dtm.fromisoformat(start_dtm).date()
+        #
+    #
+    if sacct_data_path is None:
+        #sacct_data_path = os.path.join(os.path.pwd(), 'sacct_data')
+        sacct_data_path = 'sacct_data'
+        
+    #
+    # h5 file = "sacct_sherlock_p{part}_g{group}_u{user}_{start}_{end}.h5"
+    # TODO: consider additional hash? State?
+    if sacct_h5_file is None or sacct_h5_file.strip() == '':
+            sacct_h5_file = os.path.join(sacct_data_path, f'sacct_sherlock_p{str(partition).upper()}_g{str(group).upper()}_u{user}_{start_date.year:04}{start_date.month:02}{start_date.day:02}_{end_dtm.year:04}{end_dtm.month:02}{end_dtm.day:02}.h5')
+            #sacct_h5_file = f'sacct_data/sacct_sherlock_p{str(partition).upper()}_g{str(group).upper()}_u{user}_{start_date.year:04}{start_date.month:02}{start_date.day:02}_{end_dtm.year:04}{end_dtm.month:02}{end_dtm.day:02}.h5'
+#     print('** ** ', sacct_h5_file)
+#     print(f'*** sacct_h5_file [{os.path.isfile(sacct_h5_file)}]: {sacct_h5_file}')
+#     return None
+    
+    if verbose:
+        print('*** dates: {} - {}'.format(start_date, end_date))
+        print(f'*** sacct_h5_file [{os.path.isfile(sacct_h5_file)}]: {sacct_h5_file}')
+    if not os.path.isdir(sacct_data_path):
+        os.path.makedirs(sacct_data_path)
+    #
+    if os.path.isfile(sacct_h5_file):
+        if verbose:
+            print('*** Creating SACCT object from HDF5 {}'.format(sacct_h5_file))
+        #SACCT_obj = hpc_lib.SACCT_data_from_h5(sacct_h5_file, keep_raw_data=False, n_cpu=n_cpus)
+        SACCT_obj = SACCT_data_from_h5(sacct_h5_file, keep_raw_data=False, n_cpu=n_cpu)
+
+        #
+
+    else:
+        if verbose:
+            print('*** Fetching SACCT data directly')
+        # NOTE: consider using more_options=[(nm,vl), ...]
+        #. or
+        # kwargs: sacct_{sacct_field}={value}
+        # hpc_lib.
+        SACCT_obj = SACCT_data_direct(group=group, partition=partition, start_date=str(start_date),
+                                              n_cpu=n_cpus, verbose=verbose, delim=delim_sacct,
+                                              end_date=str(end_date), keep_raw_data=False)
+        if verbose:
+            print(f'** writing HDF5: {sacct_h5_file}')
+        SACCT_obj.write_hdf5(sacct_h5_file)
+        #
+    #
+    if verbose:
+        print('** ', SACCT_obj.jobs_summary.dtype.names)
+    #
+    return SACCT_obj
+#
 class SACCT_data_handler(object):
+    '''
+    # base class for  SACCT data object (what we usually call
+    # SACCT_obj). The original version expects an input file, because the
+    # SACCT query on the original host machine was REALLY slow.
+    '''
     #
     # TODO: write GRES (gpu, etc. ) handler functions.
     # TODO: add real-time options? to get sacct data in real time; we can still stash it into a file if we need to, but
@@ -1460,15 +1543,21 @@ class SACCT_data_handler(object):
         #
         @dataclasses.dataclass
         class REP:
+            # TODO: Deprecate qs_cpus and qs_jobs in favor of Qs_cpus, Qs_jobs, which include quantile pairs.
             qs_cpus: list
             qs_jobs: list
             trend_cpus: float
             trend_jobs: float
             fig: plt.figure
+            Qs_cpus: numpy.ndarray
+            Qs_jobs: numpy.ndarray
         
         
         #return fg
-        return REP(qs_cpus, qs_jobs, p_cpus[1], p_jobs[1], fg)
+        #return REP(qs_cpus, qs_jobs, p_cpus[1], p_jobs[1], fg)
+        return REP(qs_cpus, qs_jobs, p_cpus[1], p_jobs[1], fg,\
+                   numpy.array([[q,Q] for q,Q in zip(qs, qs_cpus)]),\
+                   numpy.array([[q,Q] for q,Q in zip(qs, qs_jobs)]) )
         
     def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpu_col='NCPUS', cpuh_jobs=None, bin_size=.1, jobs_summary=None, wedgeprops=None, autopct=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
@@ -4462,7 +4551,8 @@ class SINFO_obj(object):
             if vl == '' or vl is None:
                 delim=''
             #
-            print('*** ', sinfo_str, ky, delim, vl)
+            if verbose:
+                print('*** ', sinfo_str, ky, delim, vl)
             sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, ','.join(vl))
         #
         if verbose:
