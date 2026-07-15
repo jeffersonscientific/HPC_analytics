@@ -19,9 +19,13 @@ import h5py
 #
 import subprocess
 import shlex
+import dataclasses
 #
 #import numba
 import pandas
+#
+#2025-10-24:
+# belated updage: dataclass has been added, and is kind of important to newer notebooks.
 #
 # 2023-12-11 yoder:
 # TODO: add class sinfo_nodes() (or something like it...), based on this query:
@@ -185,6 +189,9 @@ def space_replacer(s, space_to='_', space_ord=32):
 #
 #
 dtm_handler_default = str2date_num
+#
+# ############
+# Define SLURM_types_dict: Use this to convert SACCT and SQUEUE data to the correcty Python/Numpy type.
 # TODO: write this as a class, inherit from dict, class(dict):
 default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':str, 'State':str, 'JobID_parent':str,
         'Timelimit':elapsed_time_2_day,
@@ -202,6 +209,8 @@ default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':
 #   entries to simplify searching.
 default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus', 'gpus', 'GPUS', 'MEMORY']})
 default_SLURM_types_dict.update({'TIMELEFT':elapsed_time_2_day, 'TIMEUSED':elapsed_time_2_day})
+# 20260424 yoder: SQUEUE MIN_MEMORY and friends:
+default_SLURM_types_dict.update({'MIN_MEMORY': int})  # kmg_to_num() ?
 dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict.items()}
 dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict.items()} )
 default_SLURM_types_dict.update(dst_ul)
@@ -212,7 +221,87 @@ default_SLURM_types_dict.update({'Account':str})
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
 #
+def get_sacct_direct_or_hdf5(partition='serc',
+                  group=None,
+                  user=None,
+                  end_dtm = None,
+                  report_len_days = 180,
+                  start_dtm=None,
+                  delim_sacct='*',
+                  verbose=0,
+                  sacct_data_path=None,
+                  sacct_h5_file=None,
+                  n_cpu=None
+                  ):
+    #
+    end_dtm = end_dtm or dtm.datetime.now()
+    end_date = end_dtm.date()
+    
+    #
+    # NOTE: providing start_dtm will override report_len_days
+    if start_dtm is None:
+        start_date = end_date - dtm.timedelta(days=report_len_days)
+    else:
+        if isinstance(start_dtm, dtm.datetime):
+            start_date=start.dtm.date()
+        if isinstance(start_dtm, str):
+            start_date = dtm.fromisoformat(start_dtm).date()
+        #
+    #
+    if sacct_data_path is None:
+        #sacct_data_path = os.path.join(os.path.pwd(), 'sacct_data')
+        sacct_data_path = 'sacct_data'
+        
+    #
+    # h5 file = "sacct_sherlock_p{part}_g{group}_u{user}_{start}_{end}.h5"
+    # TODO: consider additional hash? State?
+    if sacct_h5_file is None or sacct_h5_file.strip() == '':
+            sacct_h5_file = os.path.join(sacct_data_path, f'sacct_sherlock_p{str(partition).upper()}_g{str(group).upper()}_u{user}_{start_date.year:04}{start_date.month:02}{start_date.day:02}_{end_dtm.year:04}{end_dtm.month:02}{end_dtm.day:02}.h5')
+            #sacct_h5_file = f'sacct_data/sacct_sherlock_p{str(partition).upper()}_g{str(group).upper()}_u{user}_{start_date.year:04}{start_date.month:02}{start_date.day:02}_{end_dtm.year:04}{end_dtm.month:02}{end_dtm.day:02}.h5'
+#     print('** ** ', sacct_h5_file)
+#     print(f'*** sacct_h5_file [{os.path.isfile(sacct_h5_file)}]: {sacct_h5_file}')
+#     return None
+    
+    if verbose:
+        print('*** dates: {} - {}'.format(start_date, end_date))
+        print(f'*** sacct_h5_file [{os.path.isfile(sacct_h5_file)}]: {sacct_h5_file}')
+    if not os.path.isdir(sacct_data_path):
+        os.path.makedirs(sacct_data_path)
+    #
+    if os.path.isfile(sacct_h5_file):
+        if verbose:
+            print('*** Creating SACCT object from HDF5 {}'.format(sacct_h5_file))
+        #SACCT_obj = hpc_lib.SACCT_data_from_h5(sacct_h5_file, keep_raw_data=False, n_cpu=n_cpus)
+        SACCT_obj = SACCT_data_from_h5(sacct_h5_file, keep_raw_data=False, n_cpu=n_cpu)
+
+        #
+
+    else:
+        if verbose:
+            print('*** Fetching SACCT data directly')
+        # NOTE: consider using more_options=[(nm,vl), ...]
+        #. or
+        # kwargs: sacct_{sacct_field}={value}
+        # hpc_lib.
+        SACCT_obj = SACCT_data_direct(group=group, partition=partition, start_date=str(start_date),
+                                              n_cpu=n_cpus, verbose=verbose, delim=delim_sacct,
+                                              end_date=str(end_date), keep_raw_data=False)
+        if verbose:
+            print(f'** writing HDF5: {sacct_h5_file}')
+        SACCT_obj.write_hdf5(sacct_h5_file)
+        #
+    #
+    if verbose:
+        print('** ', SACCT_obj.jobs_summary.dtype.names)
+    #
+    return SACCT_obj
+#
 class SACCT_data_handler(object):
+    '''
+    # base class for  SACCT data object (what we usually call
+    # SACCT_obj). The original version expects an input file, because the
+    # SACCT query on the original host machine was REALLY slow.
+    '''
     #
     # TODO: write GRES (gpu, etc. ) handler functions.
     # TODO: add real-time options? to get sacct data in real time; we can still stash it into a file if we need to, but
@@ -229,9 +318,12 @@ class SACCT_data_handler(object):
     #  containers.
     attributes={}
     #
+    # Yoder 2025-11-3: Add pram to exclude pending or running jobs based on End Date field. We have in the past used
+    #. STATE=COMPLETE, but this excludes failed jobs, which can amount to A LOT of compute time.
     #
     def __init__(self, data_file_name=None, delim='|', max_rows=None, types_dict=None, chunk_size=1000, n_cpu=None,
-                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None, qs_default=[.25,.5,.75,.9], **kwargs):
+                 n_points_usage=1000, verbose=0, keep_raw_data=False, h5out_file=None, qs_default=[.25,.5,.75,.9],
+                 **kwargs):
         '''
         # handler object for sacct data.
         #
@@ -267,6 +359,14 @@ class SACCT_data_handler(object):
         # row-headers index:
         self.RH = {h:k for k,h in enumerate(self.headers)}
         self.calc_summaries()
+        #
+#         # yoder 2025-11-3: Filter out None End dates?
+#.        # I think we already filter out Pending, so this would just be running jobs, which we have typically left
+#.        # in place intentionally. remaining multi-partition jobs will be either cancelled before runtime or arrays?
+#         # this is a bit of a sloppy hack right now; maybe we just do this at runtimne.
+#         if False:
+#             if exclude_pending_and_running:
+#                 self.jobs_summary = self.jobs_summary[ numpy.logical_or([x is None for x in self.jobs_summary['End']], numpy.isnan(self.jobs_summary['End'])
         #
         self.attributes['h5out_file'] = h5out_file
         self.attributes['RH'] = self.RH
@@ -732,12 +832,18 @@ class SACCT_data_handler(object):
         ix = self.jobs_summary['NCPUS']==n_cpu
         return self.jobs_summary['Start'][ix] - self.jobs_summary['Submit'][ix]
     #
-    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None):
+#     def get_active_gpus_layer_cake(self, jobs_summary=None, layer_field='Partition', cpu_col='NGPUs', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None):
+#         prams = {ky:val for ky,val in locals().items() if not ky in ('self', '__class__')}
+#         return self.get_active_cpus_layer_cake(**prams)
+        
+    def get_active_cpus_layer_cake(self, jobs_summary=None, layer_field='Partition', cpu_col='NCPUS', layers=None, n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, verbose=False, mpp_chunksize=10000, nan_to=0., NCPUs=None):
         # (n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0.
         if jobs_summary is None:
             jobs_summary = self.jobs_summary
+        #jobs_summary = jobs_summary[jobs_summary[cpu_col]>0]
+        #
         if NCPUs is None or NCPUs=='':
-            NCPUs = jobs_summary['NCPUS']
+            NCPUs = jobs_summary[cpu_col]
         #
         if t_now is None:
             t_now = mpd.date2num(dtm.datetime.now() )
@@ -786,8 +892,12 @@ class SACCT_data_handler(object):
         return {'N_cpu': output_cpus, 'N_jobs': output_jobs}
         
     #
-    def get_cpu_hours_layer_cake(self, jobs_summary=None, layer_field='Partition', layers=None, bin_size=7, n_points=5000,
-                              t_min=None, t_max=None, t_now=None, verbose=0):
+    def get_gpu_hours_layer_cake(self, jobs_summary=None, layer_field='Partition', cpu_col='NGPUs', layers=None, bin_size=7, n_points=5000,t_min=None, t_max=None, t_now=None, verbose=0):
+        prams = {ky:val for ky,val in locals().items() if not ky in ('self', '__class__')}
+        #
+        return self.get_cpu_hours_layer_cake(**prams)
+    
+    def get_cpu_hours_layer_cake(self, jobs_summary=None, layer_field='Partition', cpu_col='NCPUS', layers=None, bin_size=7, n_points=5000,t_min=None, t_max=None, t_now=None, verbose=0):
         '''
         # revised version of gchlc with a more intuitive output.
         #
@@ -796,6 +906,7 @@ class SACCT_data_handler(object):
         if jobs_summary is None:
             jobs_summary = self.jobs_summary
         #
+        jobs_summary = jobs_summary[jobs_summary[cpu_col]>0]
         # t_min, t_max: These constraints need to be handled up-front, from the whole data set. Subsets will likely return
         #   different t_min/t_max.
         if t_now is None:
@@ -836,7 +947,7 @@ class SACCT_data_handler(object):
                                                 jobs_summary=jobs_summary[ix])
             output_cpuh[ky] = XX['cpu_hours'][:]
             output_jobs[ky] = XX['N_jobs'][:]
-            output_elapsed[ky] =  24.*numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary['NCPUS'][ix])
+            output_elapsed[ky] =  24.*numpy.sum(jobs_summary['Elapsed'][ix]*jobs_summary[cpu_col][ix])
         #
         output_cpuh['time'] = XX['time']
         output_jobs['time'] = XX['time']
@@ -849,8 +960,80 @@ class SACCT_data_handler(object):
     #
     
     ####
-    # GPU Layer Cake Functions
+    # GPU Layer Cake and Pie Functions
     #####################
+    def report_activecpus_pie_and_CDF(self, group_by='Group', agpu_layer_cake=None, jobs_summary=None, ave_len_days=5., qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None, NCPUS=None,cpu_lbl='CPUs'):
+        '''
+        #  Inputs:
+        #   @group_by: column name for grouping
+        #   @agpu_jobs: optional input of gpuh_jobs
+        #   @bin_size: bins size of timeseries.
+        #   @fg: (optional) figure for plots. Should have 4 subplots. if not provided a default will be created.
+        #   @ax1,2,3,4: Optional. if not provided will be created and/or drawn from fg.
+        #   @ave_len_days: smoothing/averaging interval, in days.
+        #   #qs: list/array-like of quantile thresholds.
+        #.  @NCPUS: vector of data containing NCPUs data -- probably NCPUS or NGPUs
+        '''
+        qs = numpy.array(qs)
+        #bin_size = bin_size or .1
+        # 2025 11 13 yoder:
+        if jobs_summary is None:
+            jobs_summary=self.jobs_summary
+        if fg is None:
+            fg = plt.figure(figsize=(20,8))
+            for k in range(1,3):
+                fg.add_subplot(1,2,k)
+        #
+        if NCPUS is None:
+            NCPUS=jobs_summary['NCPUS']
+
+        #
+        # NOTE: this might break if (fg is None), even if ax1,2,3,4 are provided)
+        #ax1, ax2, ax3, ax4 = fg.get_axes()
+        ax1 = ax1 or fg.get_axes()[0]
+        ax3 = ax3 or fg.get_axes()[1]
+        #
+        ax1.grid()
+        ax3.grid()
+        #
+        ax1.set_title(f'{cpu_lbl} Hours (by {group_by})', size=16)
+        ax3.set_title(f'Active {cpu_lbl}, CDF', size=16)
+        #
+        active_cpus = self.active_jobs_cpu(NCPUs=NCPUS, n_points=n_points, bin_size=bin_size)
+        z_cpus = active_cpus['N_cpu']
+        qs_cpus = numpy.quantile(z_cpus, qs)
+        #
+        #
+        hh_cpus = ax3.hist(z_cpus, bins=100, cumulative=True, density=True, histtype='step', lw=3.)
+        for x,y in zip(qs_cpus, qs):
+            #ax3.plot([0., qs_cpus[-1], qs_cpus[-1]], [qs[-1], qs[-1], 0.], ls='--', color='r', lw=2. )
+            ax3.plot([0., x, x], [y, y, 0.], ls='--', lw=2., label=f'{y*100.}th %: {x:.0f} {cpu_lbl}' )
+        #
+        # Pies:
+        pi_cpu = get_pie_slices(sum_data=jobs_summary['Elapsed']*NCPUS*24.,
+                                 slice_data=self[group_by])
+        pi_cpu_lbls = pi_cpu['name'].astype(str)
+        pi_cpu_vls  = pi_cpu['value'].astype(str)
+        ax1.pie(pi_cpu_vls, labels=pi_cpu_lbls)
+
+        #
+        for ax in (ax1, ax3):
+            ax.legend(loc=0)
+        #
+        #return fg
+        @dataclasses.dataclass
+        class REP:
+            qs: numpy.array
+            cdf: numpy.array
+            pie: numpy.array
+            fig: plt.figure
+        
+        
+        #return fg
+        return REP(numpy.array([qs,qs_cpus]), hh_cpus, pi_cpu, fg)
+        
+        
+        
     def report_activegpus_layercake_and_CDFs(self, group_by='Group', agpu_layer_cake=None, jobs_summary=None, ave_len_days=5., qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
         #  Inputs:
@@ -972,12 +1155,6 @@ class SACCT_data_handler(object):
     
     def active_jobs_gpu(self,n_points=5000, bin_size=None, t_min=None, t_max=None, t_now=None, n_cpu=None, jobs_summary=None, verbose=None, mpp_chunksize=10000, nan_to=0., NGPUs=None):
         '''
-        # TODO: Facilitate GPU computation...
-        #  We could just add a GPUs column to this, but I think a more elegant solution is to add NCPUS
-        #  as an optional parameter. Default behavior will be to get it from jobs_sumamry (current behavior);
-        #  alternatively, an array like NGPUs can be provided.
-        #
-        # Since this is now procedural, let's phase out ix?. the class-resident version can keep it if so desired.
         # NOTE on parallelization: There is quite a bit of pre-processing front-matter, so it makes sense to separate the SPP and MPP, as opposed
         #  to doing a recursive callback. Basically, we put in a fair bit of work to construct our working data; it would be expensive to do it again,
         #  messy to integrate it into the call signature, etc. In other words, if you're adding a lot of inputs and input handling to accomodate MPP,
@@ -1258,7 +1435,7 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
-    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., ave_N_layers=1, qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None, trendline=True):
+    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', cpu_col='NCPUS', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., ave_N_layers=1, qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None, trendline=True):
         '''
         #  Inputs:
         #   @group_by: column name for grouping
@@ -1288,13 +1465,13 @@ class SACCT_data_handler(object):
         ax3.grid()
         ax4.grid()
         #
-        ax1.set_title('Active CPUs', size=16)
-        ax2.set_title('Active Jobs', size=16)
-        ax3.set_title('Active CPUs, CDF', size=16)
-        ax4.set_title('Active Jobs  CDF', size=16)
+        ax1.set_title(f'Active {cpu_col}', size=16)
+        ax2.set_title(f'Active {cpu_col} Jobs', size=16)
+        ax3.set_title(f'Active {cpu_col}, CDF', size=16)
+        ax4.set_title(f'Active {cpu_col} Jobs  CDF', size=16)
         #
         if acpu_layer_cake is None:
-            acpu_layer_cake = self.get_active_cpus_layer_cake(layer_field=group_by, n_points=n_points, bin_size=bin_size, jobs_summary=jobs_summary)
+            acpu_layer_cake = self.get_active_cpus_layer_cake(layer_field=group_by, cpu_col=cpu_col, n_points=n_points, bin_size=bin_size, jobs_summary=jobs_summary)
         #
         #cpus = acpu_layer_cake['N_cpu']
         #jobs = acpu_layer_cake['N_jobs']
@@ -1305,8 +1482,13 @@ class SACCT_data_handler(object):
         #
         # get an averaging length (number of TS elements) of about ave_len_days
         ave_len = int(numpy.ceil(ave_len_days*len(T)/(T[-1] - T[0])))
-        z_cpu = ax1.get_lines()[-1].get_ydata()
-        z_jobs = ax2.get_lines()[-1].get_ydata()
+        #
+        # Yoder: I think this might be an unreliable way to get these data. We might tneed to suck it up and compute.
+        # X = numpy.sum(([list(rw)[1:] for rw in kk_ncp]), axis=1)
+        z_cpu   = numpy.sum([list(rw)[1:] for rw in acpu_layer_cake['N_cpu']], axis=1)
+        z_jobs  = numpy.sum([list(rw)[1:] for rw in acpu_layer_cake['N_jobs']], axis=1)
+        #z_cpu = ax1.get_lines()[-1].get_ydata()
+        #z_jobs = ax2.get_lines()[-1].get_ydata()
         z_cpus_smooth = running_mean(z_cpu, ave_len)
         z_jobs_smooth = running_mean(z_jobs, ave_len)
         #
@@ -1331,8 +1513,8 @@ class SACCT_data_handler(object):
             ax2.plot(A_jobs[:,1], numpy.dot(A_jobs,p_jobs), ls='--', lw=3, 
                      label=f'trend: b={p_jobs[1]:.2f} jobs/day$')
             #
-            del A_cpus, A_jobs, p_cpus, p_jobs
-                 
+            #del A_cpus, A_jobs, p_cpus, p_jobs
+            del A_cpus, A_jobs     
         
         #
         ax1.plot(T[-len(z_cpus_smooth):], z_cpus_smooth, ls='-', marker='', lw=2, label=f'{ave_len_days} days-ave')
@@ -1354,9 +1536,30 @@ class SACCT_data_handler(object):
         for ax in (ax1, ax2, ax3, ax4):
             ax.legend(loc=0)
         #
-        return fg
+        # TODO: return some form of (fg, qs_cpus, qs_jobs).
+        #. look at NamedTuples, dataclass.dataclass, and namedtouples
+        # https://stackoverflow.com/questions/35988/c-like-structures-in-python
+        # can I nest the declaration?
+        #
+        @dataclasses.dataclass
+        class REP:
+            # TODO: Deprecate qs_cpus and qs_jobs in favor of Qs_cpus, Qs_jobs, which include quantile pairs.
+            qs_cpus: list
+            qs_jobs: list
+            trend_cpus: float
+            trend_jobs: float
+            fig: plt.figure
+            Qs_cpus: numpy.ndarray
+            Qs_jobs: numpy.ndarray
         
-    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpuh_jobs=None, bin_size=.1, jobs_summary=None, wedgeprops=None, autopct=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
+        
+        #return fg
+        #return REP(qs_cpus, qs_jobs, p_cpus[1], p_jobs[1], fg)
+        return REP(qs_cpus, qs_jobs, p_cpus[1], p_jobs[1], fg,\
+                   numpy.array([[q,Q] for q,Q in zip(qs, qs_cpus)]),\
+                   numpy.array([[q,Q] for q,Q in zip(qs, qs_jobs)]) )
+        
+    def report_cpuhours_jobs_layercake_and_pie(self, group_by='Group', cpu_col='NCPUS', cpuh_jobs=None, bin_size=.1, jobs_summary=None, wedgeprops=None, autopct=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None):
         '''
         # 2 x 2 block of figures showing CPU hours and active jobs, layer-cake by group_by and pie charts of same quantities.
         #  note that CPU hours are constructed timeseries (Either by creating a TS from each time interval and then mapping that to a
@@ -1387,13 +1590,15 @@ class SACCT_data_handler(object):
         ax1.grid()
         ax2.grid()
         #
-        ax1.set_title('CPU Hours (per day)', size=16)
-        ax2.set_title('Jobs (per day?)', size=16)
-        ax3.set_title('CPU Hours', size=16)
-        ax4.set_title('Jobs', size=16)
+        #ax1.set_title('CPU Hours (per day)', size=16)
+        ax1.set_title(f'{cpu_col} Hours (per day)', size=16)
+        ax2.set_title(f'Jobs (per day?)', size=16)
+        ax3.set_title(f'{cpu_col}  Hours', size=16)
+        ax4.set_title(f'{cpu_col} Jobs', size=16)
         #
         if cpuh_jobs is None:
-            cpuh_jobs = self.get_cpu_hours_layer_cake(bin_size=bin_size, jobs_summary=jobs_summary, layer_field=group_by)
+            cpuh_jobs = self.get_cpu_hours_layer_cake(bin_size=bin_size, jobs_summary=jobs_summary, layer_field=group_by,
+                                                     cpu_col=cpu_col)
         #
         # shorthand pointers:
         cpuh = cpuh_jobs['cpu_hours']
@@ -1402,15 +1607,26 @@ class SACCT_data_handler(object):
         #
         z_cpuh = plot_layer_cake(data=cpuh, layers=cpuh.dtype.names[1:], time_col='time', ax=ax1)
         z_jobs = plot_layer_cake(data=jobs, layers=cpuh.dtype.names[1:], time_col='time', ax=ax2)
-        pie_cpuh_data = plot_pie(sum_data=24.*self['Elapsed']*self['NCPUS'], slice_data=self[group_by], ax=ax3, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
-        pie_jobs_data = plot_pie(sum_data=24.*self['Elapsed'], slice_data=self[group_by], ax=ax4, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
+        ix = (self[cpu_col]>0.)
+        #
+        #print('** DEBUG: ', len(self['Elapsed']), len(self[cpu_col]), len(ix))
+        pie_cpuh_data = plot_pie(sum_data=24.*(self['Elapsed']*self[cpu_col])[ix], slice_data=self[group_by][ix], ax=ax3, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
+        pie_jobs_data = plot_pie(sum_data=24.*self['Elapsed'][ix], slice_data=self[group_by][ix], ax=ax4, wedgeprops=wedgeprops, autopct=autopct, slice_names=cpuh.dtype.names[1:])
         #
         ax1.legend(loc=0)
         ax2.legend(loc=0)
         #
-        # TODO: return all the data sets in a dict?
-        # return {'fg':fg, 'pie_cpuh_data':pie_cpuh_data, 'pie_jobs_data':pie_jobs_data, etc...}
-        return fg
+        @dataclasses.dataclass
+        class REP:
+            group_by: str
+            pie_cpuh: numpy.array
+            pie_jobs: numpy.array
+            fig: plt.figure
+        #
+        #print('*** DEBUG type(): ', type(pie_cpuh_data))
+        # TODO: This pie_cpuh_data and pie_jobs_data are currently a list of arrays of patches or something,
+        #. which is not useful. we want to pull the aggregated data.
+        return REP(group_by, pie_cpuh_data, pie_jobs_data, fg)
 
     def active_cpu_jobs_per_day_hour_report(self, qs=[.45, .5, .55], figsize=(14,10),
      cpu_usage=None, verbose=0, foutname=None, periodic_projection='rectilinear', polar=False):
@@ -1630,6 +1846,167 @@ class SACCT_data_handler(object):
         #
         return distributions
     #
+    def report_topologies_cpu_compute(self, SACCT_obj=None, quantiles=None,
+       fg=None, ax1=None, ax2=None, ax3=None):
+        '''
+        # SACCT_obj: can be  a SACCT_obj or a SACCT_obj.summary_data (I think... at least, that is the intention).
+        '''
+        if SACCT_obj is None:
+            SACCT_obj=self
+        quantiles = quantiles or numpy.array([.5, .75, .9])
+        #
+        cpu_hours_dist   = numpy.zeros(len(numpy.unique(SACCT_obj['NCPUS'])), dtype=[('NCPUS', '<i8'),
+                                                                ('hours', '<f8'), ('totalcpu', '<f8')])
+        cpu_hours_dist['NCPUS'] = numpy.unique(SACCT_obj['NCPUS'])
+
+        node_hours_dist = numpy.zeros(len(numpy.unique(SACCT_obj['NNodes'])), dtype=[('NNodes', '<i8'),
+                                                                        ('hours', '<f8'), ('totalcpu', '<f8')])
+        node_hours_dist['NNodes'] = numpy.unique(SACCT_obj['NNodes'])
+        #
+        #unique_ntasks = numpy.unique((SACCT_obj['NTasks'])[SACCT_obj['NTasks']>0])
+        unique_ntasks = numpy.unique((SACCT_obj['NTasks']))
+        tasks_hours_dist = numpy.zeros(len(unique_ntasks), dtype=[('NTasks', '<i8'),
+                                                                        ('hours', '<f8'), ('totalcpu', '<f8')])
+        tasks_hours_dist['NTasks'] = unique_ntasks
+        # Ok... This looks dumb, but I'm not sure it is. We want CDFs of CPUs*Hours for uniqe values of NCPUS, NNodes,
+        # NTASKS. So there is a way to do this like a regular CDF, by sorting, but we still end up with an extra axis
+        # So we have to aggregate each group somehow. This is probably as good as any other, once you look under
+        # the hood. The dictionary objects are basically {unique_Value: sum_of_CPUH}. Once we create those, 
+        # we can assign them in a single pass through SACCT_obj
+        #
+        # also, this will not be the fastest way to do this, but it should be fairly straight forward.
+        ix_cpus  = {n:k for k,n in enumerate(cpu_hours_dist['NCPUS'])}
+        ix_nodes = {n:k for k,n in enumerate(node_hours_dist['NNodes'])}
+        ix_tasks = {n:k for k,n in enumerate(tasks_hours_dist['NTasks'])}
+        for rw in SACCT_obj:
+            #print('** ')
+            this_cpuh = rw['Elapsed']*rw['NCPUS']*24.
+            for var,ix,cl in [(cpu_hours_dist, ix_cpus, 'NCPUS'), (node_hours_dist, ix_nodes, 'NNodes'),
+                            (tasks_hours_dist, ix_tasks, 'NTasks')]:
+                if numpy.isnan(rw[cl]):
+                    continue
+                var['hours'][ix[int(rw[cl])]] += this_cpuh
+                var['totalcpu'][ix[int(rw[cl])]] += rw['TotalCPU']
+        #
+        tasks_hours_dist = tasks_hours_dist[tasks_hours_dist['NTasks']>0]
+        #
+        cpu_hours_dist['hours'] = numpy.cumsum(cpu_hours_dist['hours'])
+        node_hours_dist['hours'] = numpy.cumsum(node_hours_dist['hours'])
+        tasks_hours_dist['hours'] = numpy.cumsum(tasks_hours_dist['hours'])
+        #
+        #qs = numpy.array([.5, .75, .9])
+        #qs = quantiles
+
+        if fg is None:
+            fg = plt.figure(figsize=(14,6))
+        #
+        if ax1 is None:
+            ax1 = fg.add_subplot(1,3,1)
+        if ax2 is None:
+            ax2 = fg.add_subplot(1,3,2)
+        if ax3 is None:
+            ax3 = fg.add_subplot(1,3,3)
+        #
+        axs = [ax1, ax2, ax3]
+        #
+        fg.suptitle('CPU-hours CDFs')
+        for ax,ttl, in zip(axs, ['Per NCPU', 'Per Node', 'Per Task']):
+            ax.set_title(ttl)
+            ax.grid()
+            #
+        X = cpu_hours_dist['NCPUS']
+        Y = cpu_hours_dist['hours']
+        #
+        quants_ncpus = numpy.nanmax(Y)*quantiles
+        quants_ncpus_x = numpy.zeros(len(quants_ncpus))
+        ax = ax1
+        ax.plot(X,Y)
+        ks = Y.searchsorted(quants_ncpus)
+        #
+        ax.set_xlabel('NCPUs', size=16)
+        ax.set_ylabel('$CPUs \cdot hours$', size=16)
+        for k,(j,y) in enumerate(zip(Y.searchsorted(quants_ncpus), quants_ncpus)):
+            x = numpy.mean(X[j-1:j+1])
+            quants_ncpus_x[k] = x
+            ax.plot([x,x,numpy.min(X)], [numpy.min(Y),y,y], ls='-', label=f'q: {quantiles[k]}={x}')
+        ax.legend(loc=0)
+        ###########
+        #
+        X,Y = node_hours_dist['NNodes'], node_hours_dist['hours']
+        quants_nnodes = numpy.nanmax(Y)*quantiles
+        quants_nnodes_x = numpy.zeros(len(quants_nnodes))
+        ax = ax2
+        #
+        ax.plot(X,Y)
+        ax.set_xlabel('N_Nodes', size=16)
+        #ax.set_ylabel('$Nodes \cdot hours$', size=16)
+        for k,(j,y) in enumerate(zip(node_hours_dist['hours'].searchsorted(quants_nnodes), quants_nnodes)):
+            x = numpy.mean(X[j-1:j+1])
+            quants_nnodes_x[k] = x
+            ax.plot([x,x,numpy.min(X)], [numpy.min(Y),y,y], ls='-', label=f'q: {quantiles[k]}={x}')
+        ax.legend(loc='lower right')
+        ################
+        #
+        X,Y = tasks_hours_dist['NTasks'], tasks_hours_dist['hours']
+        quants_ntasks = numpy.nanmax(Y)*quantiles
+        quants_ntasks_x = numpy.zeros(len(quants_ntasks))
+        ax = ax3
+        #
+        ax.plot(X,Y)
+        ax.set_xlabel('N_Tasks', size=16)
+        #ax.set_ylabel('$Tasks \cdot hours$', size=16)
+        for k,(j,y) in enumerate(zip(Y.searchsorted(quants_ntasks), quants_ntasks)):
+            x = numpy.mean(X[j-1:j+1])
+            quants_ntasks_x[k] = x
+            ax.plot([x,x,numpy.min(X)], [numpy.min(Y),y,y], ls='-', label=f'q: {quantiles[k]}={x}')
+        ax.legend(loc='lower right')
+        #fg.savefig(os.path.join(img_path, 'jobs_topology_cdfs.jpg'))
+        #
+        # now single cpu, task, etc. Jobs:
+        total_cpu_hours = numpy.sum(SACCT_obj['NCPUS']*SACCT_obj['Elapsed'])*24.
+        for x_var in ['NCPUS', 'NNodes', 'NTasks']:
+            #
+            SO = SACCT_obj[SACCT_obj[x_var]==1]
+            cpuhours_one_task = numpy.sum(SO['NCPUS']*SO['Elapsed'])*24.
+            #cpuhours_all      = numpy.sum(SACCT_obj['NCPUS']*SACCT_obj['Elapsed'])*24.
+            print(f'** {x_var}:: one: {cpuhours_one_task:.2f}, all: {total_cpu_hours:.2f}: fract: {cpuhours_one_task/total_cpu_hours:.2f}')
+            #
+            globals()[f'{x_var}_one']   = cpuhours_one_task
+            globals()[f'{x_var}_fract'] = cpuhours_one_task/total_cpu_hours
+            #
+            #print('** variables:')
+            #print(f'** *  {x_var}_one: {globals()[f"{x_var}_one:"]}')
+
+        #####
+        #
+        #
+        ####
+        @dataclasses.dataclass
+        class REP:
+            quantiles: numpy.array
+            quantiles_ntasks: numpy.array
+            quantiles_nnodes: numpy.array
+            quantiles_ncpus: numpy.array
+            cpu_hours_dist: numpy.array
+            node_hours_dist: numpy.array
+            tasks_hours_dist: numpy.array
+            cpuh_one_NTASKS: float
+            cpuh_one_NNODES: float
+            cpuh_one_NCPUS: float
+            cpuh_total: float
+            #pie_cpuh: numpy.array
+            #pie_jobs: numpy.array
+            fig: plt.figure
+        #
+        #print('*** DEBUG type(): ', type(pie_cpuh_data))
+        # TODO: This pie_cpuh_data and pie_jobs_data are currently a list of arrays of patches or something,
+        #. which is not useful. we want to pull the aggregated data.
+        return REP(quantiles, quants_ntasks_x, quants_nnodes_x, quants_ncpus_x,
+         cpu_hours_dist, node_hours_dist, tasks_hours_dist, 
+         NTasks_one, NNodes_one, NCPUS_one, total_cpu_hours, fg)
+
+
+
 
 class SACCT_data_direct(SACCT_data_handler):
     # 3 Oct 2022 yoder: skip Jobname; we wrestled a few hours with this because somebody decided
@@ -1988,7 +2365,8 @@ class SQUEUE_obj(object):
     #  uses squeue. We *could* use SACCT_obj and just limit to --State=running,pending
     #. but it seems that sacct is much slower than squeue.
     #
-    def __init__(self, partition='serc', format_fields_dict=None, squeue_prams=None, format_fields=None, verbose=False, squeue_delim='*', **kwargs):
+    def __init__(self, partition='serc', format_fields_dict=None, squeue_prams=None, \
+           format_fields=None, verbose=False, squeue_delim='*', **kwargs):
         #
         # @squeue_prams: additional or replacement fields for squeue_fields variable, eg parameters
         #. to pass to squeue. Presently, --Format and --partition are specified. some options might also
@@ -2004,6 +2382,7 @@ class SQUEUE_obj(object):
         #
         # TODO: this was originally intended to be used with a partition={} option, but let's clean
         #.  up the code to be more general.
+        # TODO also: SH_PART_obj() should be replaced with SINFO_obj()
         SP = SH_PART_obj()
         if not partition is None:
             total_cpus = SP.get_total_cpus(partitions=partition)
@@ -2025,6 +2404,7 @@ class SQUEUE_obj(object):
         if format_fields is None:
             #
             # 
+            # TODO: add , 'min_memory' , and gpus.
             format_fields = ['jobid', 'jobarrayid', 'partition', 'name:50', 'username', 'timeused',
                                       'timeleft', 'numnodes', 'numcpus', 'numtasks', 'state', 'nodelist:50','tres-alloc:150']
         if isinstance(format_fields, bytes):
@@ -2034,7 +2414,8 @@ class SQUEUE_obj(object):
         #
         format_fields_str = ','.join([(f'{s}{squeue_delim}' if ':' in s else f'{s}:{squeue_delim}') for s in format_fields[:-1]] + [format_fields[-1]])
         #format_fields_str = f'"{format_fields_str}"'
-        print(f'*** *** DEBUG format_fields_str: {format_fields_str}')
+        if verbose:
+            print(f'*** *** DEBUG format_fields_str: {format_fields_str}')
         #
         squeue_fields = {'--Format': format_fields_str,
                       '--partition': partition
@@ -2095,7 +2476,12 @@ class SQUEUE_obj(object):
         squeue_output = subprocess.run(squeue_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         cols = squeue_output[0].replace(' ', '').split(squeue_delim)
         #
-        print(f'** A row: \n{squeue_output[1]}')
+        # DEBUGGING:
+        self.len_squeue = len(squeue_output)
+        #
+        if verbose:
+            print(f'** A row: \n{squeue_output[1]}')
+        #
         # column names:
         #. note, some --Format fields return the same column name.
         #cols = squeue_output[0].split()
@@ -2118,11 +2504,14 @@ class SQUEUE_obj(object):
         #.     2) then find [ and transform to ==> name_1, name_2, ...
         #
         # put the initial squeue output into a DF:
-        print(f'*** DEBUG: {len(squeue_output[1].split())}, {len(squeue_Format)}')
-        print(f'*** DEBUG: {squeue_output[1].split()}')
+        if verbose:
+            print(f'*** DEBUG: output: {squeue_output[1]}')
+            print(f'*** DEBUG: {len(squeue_output[1].split(squeue_delim))}, {len(squeue_Format)}')
+            print(f'*** DEBUG: {squeue_output[1].split()}')
+        #
         squeue_data = pandas.DataFrame(data=[[self.format_fields_dict.get(cl.split(':')[0].lower(),str)(x)
-                                  for x, cl in zip(rw.split(),squeue_Format) ]
-                                 for rw in squeue_output[1:] if not len(rw.strip()) == 0],
+                                  for x, cl in zip(rw.split(squeue_delim),squeue_Format) ]
+                                  for rw in squeue_output[1:] if not len(rw.strip()) == 0],
                                    columns=cols)
         # now,compute mem, gpus, cpus? from tres:
         
@@ -3181,6 +3570,9 @@ def fix_to_ascii(s):
     if isinstance(s,bytes):
         s = s.decode()
     #
+    # I think we want this to break if it's not a string, so let's hold tight for now...
+    #s = str(s)
+    #
     # TODO: better string handling please...
     chrs = {8211:'--', 2013:'_', 8722:'-'}
     #
@@ -3951,7 +4343,7 @@ def plot_pie(sum_data, slice_data, slice_names=None, n_decimals=1, autopct='%1.1
     #
     pie_data = ax.pie(pi_vls, labels=pi_lbls, autopct=autopct, wedgeprops=wedgeprops)
     #
-    return pie_data
+    return pi_data
 #
 def input_date_to_num(x):
     '''
@@ -4159,6 +4551,8 @@ class SINFO_obj(object):
             if vl == '' or vl is None:
                 delim=''
             #
+            if verbose:
+                print('*** ', sinfo_str, ky, delim, vl)
             sinfo_str = '{} {}{}{}'.format(sinfo_str, ky, delim, ','.join(vl))
         #
         if verbose:
@@ -4176,6 +4570,11 @@ class SINFO_obj(object):
     # NOTE: I think we can also just do something like,
     #. self.__getitem__ = self.sinfo_data.__getitem__
     #  for some reason, I usually just write the passthrough.
+    def __iter__(self, *args, **kwargs):
+        return self.sinfo_data.__iter__
+    #
+    def __len__(self, *args, **kwargs):
+        return len(self.sinfo_data)
     def __getitem__(self, *args, **kwargs):
         return self.sinfo_data.__getitem__(*args, **kwargs)
     def __setitem__(self, *args, **kwargs):
@@ -4188,9 +4587,17 @@ class SINFO_obj(object):
     def set_sinfo_data(self):
         #
         sinfo_data = self.get_sinfo_data()
-        gpus = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']), dtype=[('GPUS', int)])
         #
-        self.sinfo_data = nrf.merge_arrays( (sinfo_data, gpus), asrecarray=True, flatten=True)
+        # this is nrf.merge_arrays() failing. CLAUDE recommends this fix:
+        # TODO: TEst it!
+        #gpus = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']), dtype=[('GPUS', int)])
+        #self.sinfo_data = nrf.merge_arrays( (sinfo_data, gpus), asrecarray=True, flatten=True)
+        gpus_vals = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']))
+        self.sinfo_data = nrf.append_fields(
+            sinfo_data, 'GPUS', gpus_vals,
+            dtypes=int, usemask=False, asrecarray=True
+            )
+        #
         self.dtype      = self.sinfo_data.dtype
     #        
     def get_sinfo_data(self, sinfo_delim=None, verbose=None):
@@ -4247,6 +4654,14 @@ class SINFO_obj(object):
     @property
     def total_cpus(self):
         return self.get_total_cpus(cpus_col='CPUS')
+    @property
+    def total_cpu_cpus(self):
+        #return self.get_total_cpus(cpus_col=self['CPUS'][self.['GPUS']==0])
+        return numpy.sum(self['CPUS'][self['GPUS']==0])
+    @property
+    def total_gpu_cpus(self):
+        #return self.get_total_cpus(cpus_col=self['CPUS'][self.['GPUS']>0])
+        return numpy.sum(self['CPUS'][self['GPUS']>0])
     
     def get_total_cpus(self, cpus_col=None):
         #
