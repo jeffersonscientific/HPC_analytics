@@ -1,4 +1,10 @@
-# functions, classes, and other helper bits for HPC_analytics notebooks and other libs.
+# classes, functions, etc. for LaTex --> PDF based reporting.
+#  This was an early phase development of reporting capabilites, and it works
+#  (maybe with a few tweaks...), but it is probably much easier to use the newer
+#  python-ppxt package (there is also code available for that...).
+#  In the end, both are a a bit limited and clunky. Both suffer from serial limitaions --
+#  meaninign taht some formatting operations need to be done in a certain order.
+#  python-ppxt is, for most people, probably easier and definitely supported by CLAUDE.
 #
 import os
 import sys
