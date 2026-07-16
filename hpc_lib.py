@@ -2455,6 +2455,12 @@ class SQUEUE_obj(object):
     def __setitem__(self, *args, kwargs):
         return self.squeue_data.__setitem__
     #
+    # I had this in a notebook, but it really is not a telling quantity, since by itself, it does only
+    # counts rows -- no account for n_cpus, job status, etc.
+    #@property
+    #def len_squeue(self):
+    #    return len(self.squeue_data)
+    
     def get_squeue_data(self, squeue_str=None, squeue_delim=None, verbose=None):
         '''
         #
@@ -2476,11 +2482,10 @@ class SQUEUE_obj(object):
         squeue_output = subprocess.run(squeue_str.split(), stdout=subprocess.PIPE).stdout.decode().split('\n')
         cols = squeue_output[0].replace(' ', '').split(squeue_delim)
         #
-        # DEBUGGING:
-        self.len_squeue = len(squeue_output)
-        #
         if verbose:
             print(f'** A row: \n{squeue_output[1]}')
+            print(f'** len(squeue): {len(squeue_output)}\n')
+        self.len_squeue = len(squeue_output)
         #
         # column names:
         #. note, some --Format fields return the same column name.
@@ -4580,13 +4585,19 @@ class SINFO_obj(object):
     def __setitem__(self, *args, **kwargs):
         return self.sinfo_data.__setitem__(*args, **kwargs)
     def __iter__(self, *args, **kwargs):
-        return self.sinfo_data.iter(*args, **kwargs)
+        return self.sinfo_data.__iter__(*args, **kwargs)
     def __next__(self, *args, **kwargs):
-        return self.sinfo_data.next(*args, **kwargs)
+        return self.sinfo_data.__next__(*args, **kwargs)
     #
+    def __len__(self, *args, **kwargs):
+        return self.sinfo_data.__len__(*args, **kwargs)
+    
     def set_sinfo_data(self):
         #
         sinfo_data = self.get_sinfo_data()
+        gpus = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']), dtype=[('GPUS', int)])
+        print('*** DEBUG: gpus.dtype: ', gpus.dtype)
+        print('*** DEBUG: sinfo_data.dtype', sinfo_data.dtype)
         #
         # this is nrf.merge_arrays() failing. CLAUDE recommends this fix:
         # TODO: TEst it!
@@ -4636,11 +4647,47 @@ class SINFO_obj(object):
             #
             print('*** ***: --Format: ', self.sinfo_fields['--Format'])
         #
-        return pandas.DataFrame(data=[[self.format_fields_dict.get(cl.lower(),str)(x)
+        sinfo_data = pandas.DataFrame(data=[[self.format_fields_dict.get(cl.lower(),str)(x)
                                   for x, cl in zip(rw.split(sinfo_delim),
                                 self.sinfo_fields['--Format']) ]
                                  for rw in sinfo_output[1:] if not len(rw.strip()) == 0],
                                    columns=cols).to_records()
+        #
+        # now, convert 'O' data types to fixed length.
+        new_dtype = []
+        for nm in sinfo_data.dtype.names:
+            dt = sinfo_data.dtype[nm]
+            #
+            if dt.kind != 'O':
+                new_dtype.append((nm,dt))
+                continue
+            #
+            col = sinfo_data[nm]
+            #if dt.kind == 'O':
+            try:
+                # Numeric?
+                # These should all be string-line, but let's catch the rogue numeric.
+                numeric = numpy.array([numpy.nan if v is None else float(v) for v in col])
+                new_dtype.append((nm, 'f8'))
+            except:
+                # not numeric...
+                strs = ['' if v is None else str(v) for v in col]
+                maxlen = max((len(s) for s in strs), default=1)
+                new_dtype.append((nm, f'U{max(maxlen, 1)}'))
+            #
+        #
+        new_dtype = numpy.dtype(new_dtype)
+        output = numpy.empty(sinfo_data.shape, dtype=new_dtype)
+        
+        for name in sinfo_data.dtype.names:
+            if sinfo_data.dtype[name].kind != 'O':
+                output[name] = sinfo_data[name]
+            elif new_dtype[name].kind == 'f':
+                output[name] = [np.nan if v is None else float(v) for v in sinfo_data[name]]
+            else:
+                output[name] = [''  if v is None else str(v) for v in sinfo_data[name]]
+
+        return output
 
 
     #
