@@ -284,7 +284,7 @@ def get_sacct_direct_or_hdf5(partition='serc',
         # kwargs: sacct_{sacct_field}={value}
         # hpc_lib.
         SACCT_obj = SACCT_data_direct(group=group, partition=partition, start_date=str(start_date),
-                                              n_cpu=n_cpus, verbose=verbose, delim=delim_sacct,
+                                              n_cpu=n_cpu, verbose=verbose, delim=delim_sacct,
                                               end_date=str(end_date), keep_raw_data=False)
         if verbose:
             print(f'** writing HDF5: {sacct_h5_file}')
@@ -889,6 +889,12 @@ class SACCT_data_handler(object):
         output_cpus['time'] = XX['time']
         output_jobs['time'] = XX['time']
         #
+        # TODO: convert to dataclass type return
+        # @dataclasses.dataclass
+        # class REP:
+        #     cpus: numpy.array
+        #     jobs: numpy.array
+
         return {'N_cpu': output_cpus, 'N_jobs': output_jobs}
         
     #
@@ -1435,7 +1441,10 @@ class SACCT_data_handler(object):
     #
     #
     # figures and reports:
-    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', cpu_col='NCPUS', acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., ave_N_layers=1, qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None, ax3=None, ax4=None, trendline=True):
+    def report_activecpus_jobs_layercake_and_CDFs(self, group_by='Group', cpu_col='NCPUS',
+     acpu_layer_cake=None, jobs_summary=None, ave_len_days=5., ave_N_layers=1,
+      qs=[.5, .75, .9], n_points=5000, bin_size=None, fg=None, ax1=None, ax2=None,
+       ax3=None, ax4=None, trendline=True, cpu_max=None):
         '''
         #  Inputs:
         #   @group_by: column name for grouping
@@ -1444,7 +1453,8 @@ class SACCT_data_handler(object):
         #   @fg: (optional) figure for plots. Should have 4 subplots. if not provided a default will be created.
         #   @ax1,2,3,4: Optional. if not provided will be created and/or drawn from fg.
         #   @ave_len_days: smoothing/averaging interval, in days.
-        #   #qs: list/array-like of quantile thresholds.
+        #   @qs: list/array-like of quantile thresholds.
+        #.  @cpu_max: total number of CPUs, to report percent active.
         '''
         qs = numpy.array(qs)
         #bin_size = bin_size or .1
@@ -1525,13 +1535,19 @@ class SACCT_data_handler(object):
         #
         hh_cpus = ax3.hist(z_cpu, bins=100, cumulative=True, density=True, histtype='step', lw=3.)
         for x,y in zip(qs_cpus, qs):
-            #ax3.plot([0., qs_cpus[-1], qs_cpus[-1]], [qs[-1], qs[-1], 0.], ls='--', color='r', lw=2. )
-            ax3.plot([0., x, x], [y, y, 0.], ls='--', lw=2., label=f'{y*100.}th %: {x:.0f} cpus' )
+            #
+            lbl = f'{y*100.}th %: {x:.0f} cpus' 
+            if not cpu_max is None and cpu_max>x:
+                lbl = f'{lbl} ({100.* x/cpu_max:.0f} %)'
+            ax3.plot([0., x, x], [y, y, 0.], ls='--', lw=2., label=lbl )
         #
         hh_jobs = ax4.hist(z_jobs, bins=100, cumulative=True, density=True, histtype='step', lw=3.)
         for x,y in zip(qs_jobs, qs):
-            #ax3.plot([0., qs_cpus[-1], qs_cpus[-1]], [qs[-1], qs[-1], 0.], ls='--', color='r', lw=2. )
-            ax4.plot([0., x, x], [y, y, 0.], ls='--', lw=3., label=f'{y*100.}th %: {x:.0f} jobs' )
+            #
+            lbl = f'{y*100.}th %: {x:.0f} jobs' 
+            if not cpu_max is None and cpu_max>x:
+                lbl = f'{lbl} ({100.* x/cpu_max:.0f} %)'
+            ax4.plot([0., x, x], [y, y, 0.], ls='--', lw=3., label=lbl )
         #
         for ax in (ax1, ax2, ax3, ax4):
             ax.legend(loc=0)
@@ -1847,7 +1863,7 @@ class SACCT_data_handler(object):
         return distributions
     #
     def report_topologies_cpu_compute(self, SACCT_obj=None, quantiles=None,
-       fg=None, ax1=None, ax2=None, ax3=None):
+       fg=None, ax1=None, ax2=None, ax3=None, verbose=False):
         '''
         # SACCT_obj: can be  a SACCT_obj or a SACCT_obj.summary_data (I think... at least, that is the intention).
         '''
@@ -1879,7 +1895,6 @@ class SACCT_data_handler(object):
         ix_nodes = {n:k for k,n in enumerate(node_hours_dist['NNodes'])}
         ix_tasks = {n:k for k,n in enumerate(tasks_hours_dist['NTasks'])}
         for rw in SACCT_obj:
-            #print('** ')
             this_cpuh = rw['Elapsed']*rw['NCPUS']*24.
             for var,ix,cl in [(cpu_hours_dist, ix_cpus, 'NCPUS'), (node_hours_dist, ix_nodes, 'NNodes'),
                             (tasks_hours_dist, ix_tasks, 'NTasks')]:
