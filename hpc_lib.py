@@ -176,6 +176,7 @@ def kmg_to_num(x):
     except:
         return None
 def space_replacer(s, space_to='_', space_ord=32):
+    # NOTE: There is a proper python way to do this...
     # NOTE: default is to replace space with '_', but can be abstracted. Let's also handle bytearrays...
     # NOTE: we'll put in a hack for bytes array, but we should be getting the ecoding from the input.
     # for now, let's not do this. bytes vs string can be handled by the calling function. If we handle it here, we
@@ -207,6 +208,7 @@ default_SLURM_types_dict = {'User':str, 'JobID':str, 'JobName':str, 'Partition':
 # yoder, 2022-08-11: updating default_SLURM_types_dict, mostly to facilitate SQUEUE calls. separating it out
 #   (rather than just directly add in the new cols) for posterity. also, adding .lower() and .upper() duplicate
 #   entries to simplify searching.
+#  SQUEUE entries:
 default_SLURM_types_dict.update({ky:int for ky in ['NODES', 'CPUS', 'TASKS', 'numnodes', 'numtasks', 'numcpus', 'gpus', 'GPUS', 'MEMORY']})
 default_SLURM_types_dict.update({'TIMELEFT':elapsed_time_2_day, 'TIMEUSED':elapsed_time_2_day})
 # 20260424 yoder: SQUEUE MIN_MEMORY and friends:
@@ -215,8 +217,15 @@ dst_ul = {ky.lower():val for ky,val in default_SLURM_types_dict.items()}
 dst_ul.update( {ky.upper():val for ky,val in default_SLURM_types_dict.items()} )
 default_SLURM_types_dict.update(dst_ul)
 del dst_ul
+#
+# 2026-07-20 yoder: develop, test, then integrate the following types_dict updates:
 # TODO: this addition to default_SLURM_types_dict separated for diagnistic/dev purposes. Integrate it directly into main def.
 default_SLURM_types_dict.update({'Account':str})
+#
+# new:
+default_SLURM_types_dict.update({f'gpumem_{s}':kmg_to_num for s in ('min', 'ave', 'max')})
+default_SLURM_types_dict.update({f'gpuutil_{s}':int for s in ('min', 'ave', 'max')})
+default_SLURM_types_dict.update({f'energy_{s}':int for s in ('min', 'ave', 'max')})
 #
 def running_mean(X, n=10):
     return (numpy.cumsum(X)[n:] - numpy.cumsum(X)[:-n])/n
@@ -245,7 +254,7 @@ def get_sacct_direct_or_hdf5(partition='serc',
         if isinstance(start_dtm, dtm.datetime):
             start_date=start.dtm.date()
         if isinstance(start_dtm, str):
-            start_date = dtm.fromisoformat(start_dtm).date()
+            start_date = dtm.datetime.fromisoformat(start_dtm).date()
         #
     #
     if sacct_data_path is None:
@@ -412,8 +421,53 @@ class SACCT_data_handler(object):
         # for s in jobs_summary['AllocTRES'].astype(str)])
         #
         # NOTE: if this blows up, it might be because I made a couple minor type-handling changes on 25 July 2022 (yoder):
+        # NOTE: Also, a safer string serach might be the more complete, "gres/gpu="
         return numpy.array([int(s.split('gpu=')[1].split(',')[0]) if 'gpu=' in s else 0
          for s in alloc_tres]).astype(int)
+    # 2026-07-20, yoder:
+    #  Also gather gres/gpumem and gres/gpuutil from 
+    def get_TRESUsageIn_data(self, jobs_summary=None, TUI_min=None, TUI_ave=None, TUI_max=None, TUI_tot=None):
+        '''
+        # @jobs_sumamry: jobs_sumamry table/array. Read only for default values.
+        # @tresin_{min,ave,max}: TRESIn_{} data. If not using default from default or provided jobs_summary,
+        #. these are columns of data.
+        # Note: We're mostly copying the get_NGPUs() workflow, except we'll create [[ky,vl], ...] arrays/dicts
+        # for each TRESIn, then... let's plan to return a full recarray with 4 x n_categories columns
+        # and len(jobs_summary or {input_data}) rows.
+        #
+        # TODO: ? Also collect TRESUsageIn{min,max}{Node,Task}: Shows the nodename and task rank of the min/max quant.
+        '''
+        #
+        # bercause we have to convert and type the data, this can't really be abstracted/passed as
+        #.  a parameter.
+        tres_cols = ['gres/gpumem', 'gres/gpuutil', 'energy']
+        #
+        if jobs_summary is None:
+            jobs_summary = self.jobs_summary
+        #
+        if TUI_min is None:
+            TUI_min = jobs_summary['TRESUsageInMin']
+        if TUI_ave is None:
+            TUI_ave = jobs_summary['TRESUsageInAve']
+        if TUI_max is None:
+            TUI_max = jobs_summary['TRESUsageInMax']
+        if TUI_tot is None:
+            TUI_tot = jobs_summary['TRESUsageInTot']
+        #
+        # kmg_to_num()
+        # ok, but... these are not the same type. 
+        # gpumem: kmg_to_num().astype(int)
+        # gpuutil: int
+        # energy: int
+        cls = [ss.split('/')[1] if '/' in ss else ss for ss in tres_cols]
+        #dtype_return = [(f'{cl}_{s}', int) for cl in cls for s in ('min', 'ave', 'max', 'tot')]
+        dtype_return = [(f'{cl}_{s}', int) for cl in ['gpuutil', 'energy'] for s in ('min', 'ave', 'max', 'tot')]
+        dtype_return += [(f'{cl}_{s}', int) for cl in ['gpumem'] for s in ('min', 'ave', 'max', 'tot')]
+        #
+        # now, create an output array, parse all the fields, populate the array.
+
+        return None 
+
     #
     def compute_mpd_epoch_dt(self, test_col='Submit', test_index=0, yr_upper=3000, yr_lower=1000):
         #
@@ -2338,8 +2392,8 @@ class SACCT_data_from_h5(SACCT_data_handler):
                 if ky in ('start_date', 'end_date') and isinstance(vl, str):
                     vl = mpd.num2date(mpd.datestr2num(vl))
                 self.__dict__[ky] = vl
-            #
-            del ky,ary
+                #
+                #del ky,ary
         self.dt_mpd_epoch = self.compute_mpd_epoch_dt()
         #
         # Now, modify jobs_summary to use plain string, not byte-array, types?:
@@ -4607,12 +4661,15 @@ class SINFO_obj(object):
     def __len__(self, *args, **kwargs):
         return self.sinfo_data.__len__(*args, **kwargs)
     
-    def set_sinfo_data(self):
+    def set_sinfo_data(self, verbose=False):
+        #
+        verbose = verbose or self.verbose
         #
         sinfo_data = self.get_sinfo_data()
         gpus = numpy.array(self.get_gpus_col(gres_col=sinfo_data['GRES']), dtype=[('GPUS', int)])
-        print('*** DEBUG: gpus.dtype: ', gpus.dtype)
-        print('*** DEBUG: sinfo_data.dtype', sinfo_data.dtype)
+        if verbose:
+            print('*** DEBUG: gpus.dtype: ', gpus.dtype)
+            print('*** DEBUG: sinfo_data.dtype', sinfo_data.dtype)
         #
         # this is nrf.merge_arrays() failing. CLAUDE recommends this fix:
         # TODO: TEst it!

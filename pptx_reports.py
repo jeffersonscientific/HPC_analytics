@@ -22,7 +22,15 @@ import pptx
 from pptx.enum.text import PP_ALIGN
 #
 #import HPC_analytics.hpc_lib as hpc_lib
-import hpc_lib as hpc_lib
+#import hpc_lib
+# use this syntax to force the path-relative import. If we start doing a pip install, we might
+#. be able to/need to change this to the regular "import hpc_lib" syntax
+# which of these works seems to depend on how we load it -- eg, batch job vs notebook
+try:
+    from . import hpc_lib
+except:
+    import hpc_lib
+
 GB=1024.**3.
 #
 # def run_partition_pptx(partition=None, group=None, user=None, 
@@ -74,7 +82,8 @@ class SACCT_PPTX_Deck(object):
         SINFO_obj = hpc_lib.SINFO_obj(partition=partition, sinfo_prams={'--Node':''}, Format_fields='node',
                             verbose=False, do_sinfo=True
                             )
-
+        
+        print(f'** DEBUG: {type(start_dtm)}, {type(end_dtm)}')
         SACCT_obj = hpc_lib.get_sacct_direct_or_hdf5(partition=partition, group=group, user=user, 
                                start_dtm=start_dtm, end_dtm=end_dtm, report_len_days=report_len_days,
                                 n_cpu=n_cpus,
@@ -667,11 +676,7 @@ def parse_args(argv=None):
      help='Type of report to run, eg. base, partition, user, group'
      )
      
-    parser.add_argument(
-        '--report_len_days',
-        type=int,
-        required=False,
-        default=180,
+    parser.add_argument('--report_len_days', type=int, required=False, default=180,
         help='Length of report, in number of days. start_dtm can be calculated from this number'
     )
     
@@ -692,9 +697,9 @@ def parse_args(argv=None):
         help='Start date of reporting period. Alternatively, report_len_days and end_dtm can be provided and this value is calculated.'
     )
     #
-    parser.add_argument("--partition", type=str, default=None, help="Slurm partition name.")
-    parser.add_argument("--group", type=str, default=None, help="Account/group name.")
-    parser.add_argument("--user", dest="user", type=str, default=None, help="Username to filter on.")
+    parser.add_argument("--partition", type=str, required=False, default=None, help="Slurm partition name.")
+    parser.add_argument("--group", type=str, required=False, default=None, help="Account/group name.")
+    parser.add_argument("--user", dest="user", required=False, type=str, default=None, help="Username to filter on.")
     parser.add_argument("--ncpu", dest="n_cpus", type=int, default=None, help="Number of CPUs the SACCT_obj will use")
     parser.add_argument("--delim_sacct", type=str, default="*", help="Field delimiter for sacct output, usually '*'.")
     parser.add_argument("--sacct-data-path", default="sacct_data", type=str, help="Path to sacct data file.")
@@ -715,11 +720,14 @@ def main(argv=None):
     #
     if args.test:
         print('** --test parameter passed.')
-        return 42
+        print(f'** partition, group, user, ncpus: {args.partition}, {args.group}, {args.user}, {args.n_cpus}, {args.report_len_days}')
+        #
+        # must return 0 or the bash script interprets the return as an error.
+        return 0
     #
     #for i in range(args.count):
     #    print(f"Hello, {args.name}! ({i + 1}/{args.count})")
-    print(f'** {args.partition}, {args.group}, {args.user}, {args.n_cpus}')
+    print(f'** partition, group, user, ncpus: {args.partition}, {args.group}, {args.user}, {args.n_cpus}, {args.report_len_days}')
     report_type = args.report_type
     #
     # Put all the variables into a dictionary, so we can mange them more easily? It saves us some coding
@@ -737,9 +745,10 @@ def main(argv=None):
     end_dtm         = args.end_dtm
     start_dtm       = args.start_dtm
     report_len_days = args.report_len_days
-    if not end_dtm is None:
+    # I think these might get automagically converted by argparser.... even though we define them as str?
+    if not end_dtm is None and isinstance(end_dtm, str):
         end_dtm = dtm.datetime.strptime(args.end_dtm, "%Y-%m-%d")
-    if not start_dtm is None:
+    if not start_dtm is None and isinstance(end_dtm, str):
         start_dtm = dtm.datetime.strptime(args.start_dtm, "%Y-%m-%d")
     if not report_len_days is None:
         report_len_days = int(report_len_days)
@@ -818,6 +827,12 @@ def main(argv=None):
         'report_name': pptx_name,
         'verbose': verbose
         }
+    for ky,vl in kwargs_pptx.items():
+        #print(f'** **: {ky}, {vl}')
+        if str(vl).lower() == "none":
+            kwargs_pptx[ky] =  None
+        #
+    #
 #     report = SACCT_PPTX_Deck(partition=partition, group=group, user=user,
 #                              start_dtm=start_dtm, end_dtm=end_dtm, report_len_days=report_len_days, n_cpus=n_cpus,
 #                           delim_sacct=delim_sacct, sacct_data_path=sacct_data_path,
@@ -825,6 +840,10 @@ def main(argv=None):
 #                             )
 # #     , slides_list=None,
 # #                           extra_slide_types=None
+    if verbose:
+        print(f"** DEBUG: Still testing; kwargs:")
+        for ky,vl in kwargs_pptx.items():
+            print(f'{ky}: {vl}')
     report_type=report_type.lower()
     if report_type == 'base':
         report = SACCT_PPTX_Deck(**kwargs_pptx)
