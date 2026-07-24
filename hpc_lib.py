@@ -370,6 +370,7 @@ class SACCT_data_handler(object):
         self.calc_summaries()
         #
 #         # yoder 2025-11-3: Filter out None End dates?
+#.        #.  or maybe filter out no start_date?
 #.        # I think we already filter out Pending, so this would just be running jobs, which we have typically left
 #.        # in place intentionally. remaining multi-partition jobs will be either cancelled before runtime or arrays?
 #         # this is a bit of a sloppy hack right now; maybe we just do this at runtimne.
@@ -791,6 +792,7 @@ class SACCT_data_handler(object):
         # @bin_size: size of bins. This will override n_points
         # @t_min: start time (aka, bin phase).
         # @ix: an index, aka user=my_user
+        # #NCPUs: Vector of data to use as NCPUS; default is jobs_summary['NCPUs']
         '''
         #
         if verbose is None:

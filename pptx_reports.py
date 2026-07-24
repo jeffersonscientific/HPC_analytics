@@ -235,7 +235,6 @@ class SACCT_PPTX_Deck(object):
         ax1 = fg.add_subplot(2,1,1)
         ax2 = fg.add_subplot(2,1,2)
         #
-        #
         ix_picpuh = numpy.argsort(pi_cpuh['value'])
         X = pi_cpuh['value'][ix_picpuh]
         Y = numpy.arange(1, len(X)+1)
@@ -478,6 +477,12 @@ class SACCT_Partition_PPTX_Deck(SACCT_PPTX_Deck):
         pie_cdf_cpus = self.slide_cpus_pie_and_cdf(SACCT_obj=None, SINFO_obj=None,
                 group_by='Account', cpus_col='NCPUS', fig_fname=None, group_data=None, sum_data=None)
         topos        = self.slide_jobs_topologies()
+        #
+        # GPUS
+        # TODO: Add a "GPUs" intra-deck title slide.
+        gpus_activity = self.slide_active_cpus(cpu_jobs=False, gpu_jobs=True, cpu_col='NGPUs')
+        pie_cdf_gpus = self.slide_cpus_pie_and_cdf(SACCT_obj=None, SINFO_obj=None,
+                group_by='Account', cpus_col='NGPUs', fig_fname=None, group_data=None, sum_data=None)
         self.save()
 
     def slide_title(self, do_save=False):
@@ -553,7 +558,7 @@ class SACCT_Partition_PPTX_Deck(SACCT_PPTX_Deck):
             prs.save(report_pathname)
     #
     def slide_active_cpus(self, SACCT_obj=None, SINFO_obj=None, with_trendline=True,
-          cpu_jobs=True, gpu_jobs=True, plot_max=True, do_save=False):
+          cpu_jobs=True, gpu_jobs=True, plot_max=True, cpu_col='NCPUS', do_save=False):
         '''
         # computes and plots timeseries of active CPUs. Includes all CPUs, as opposed to CPU-only jobs
         # or CPUs supporting GPU jobs.
@@ -576,8 +581,20 @@ class SACCT_Partition_PPTX_Deck(SACCT_PPTX_Deck):
             n_cpus_total = n_cpus_max + n_gpus_max
 
         # returns a dataclass object
+        # filter report for gpu/cpu with @jobs_summary paramenter:
+        js = SACCT_obj.jobs_summary
+        # my brain is fried; let's just game out this index, then apply logic.
+        #ix_cpu_gpu = numpy.logical_or(numpy.logical_and(ds['NGPUs']>0, gpu_jobs), numpy.logical_and(ds['NGPUs']==0, cpu_jobs))
+        ix_gpu = numpy.logical_and(js['NGPUs']>0,  numpy.array([gpu_jobs for _ in js]) )    # these are GPU jobs AND we include GPU jobs
+        ix_cpu = numpy.logical_and(js['NGPUs']==0, numpy.array([cpu_jobs for _ in js]))    # these are CPU jobs AND we include CPU jobs
+        js = js[numpy.logical_or(ix_gpu, ix_cpu)]
+        #
+ #       rep_cpu_lc = SACCT_obj.report_activecpus_jobs_layercake_and_CDFs(group_by='Partition',
+ #        trendline=with_trendline, cpu_max=(n_cpus_max + n_gpus_max))
         rep_cpu_lc = SACCT_obj.report_activecpus_jobs_layercake_and_CDFs(group_by='Partition',
-         trendline=with_trendline, cpu_max=(n_cpus_max + n_gpus_max))
+         trendline=with_trendline, cpu_max=(n_cpus_max + n_gpus_max), jobs_summary=js,
+         cpu_col=cpu_col)
+
         #
         # plot total CPUs in partition. Also, subtract CPUs associated with GPUs. For now, this is just
         #. something we know. we will need to work harder to get it from data.
@@ -600,7 +617,7 @@ class SACCT_Partition_PPTX_Deck(SACCT_PPTX_Deck):
             #n_gpus_max = 0    # gpu-cpus, not number of GPUs...
             if cpu_jobs:
                 #n_cpus_max = SINFO_obj.total_cpu_cpus
-                ax.plot( x_max_cpus, numpy.ones(2)*n_cpus_max-(10*128 + 2*24 + 1*64), ls='--', lw=3.,
+                ax.plot( x_max_cpus, numpy.ones(2)*n_cpus_max, ls='--', lw=3.,
                 color='m', label='CPUs')
             if gpu_jobs:
                 #n_gpus_max = SINFO_obj.total_gpu_cpus
