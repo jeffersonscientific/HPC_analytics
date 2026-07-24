@@ -222,7 +222,9 @@ del dst_ul
 # TODO: this addition to default_SLURM_types_dict separated for diagnistic/dev purposes. Integrate it directly into main def.
 default_SLURM_types_dict.update({'Account':str})
 #
-# new:
+# NEW:
+# But I'm not sure we'll end up using these, since we have to parse them out of TRESUtilIn_{min/ave/max/tot}
+# We do seem to need a handler for the TRESUtilIN_ cols themselves, so we don't just pick up the first empty row.
 default_SLURM_types_dict.update({f'gpumem_{s}':kmg_to_num for s in ('min', 'ave', 'max')})
 default_SLURM_types_dict.update({f'gpuutil_{s}':int for s in ('min', 'ave', 'max')})
 default_SLURM_types_dict.update({f'energy_{s}':int for s in ('min', 'ave', 'max')})
@@ -240,9 +242,13 @@ def get_sacct_direct_or_hdf5(partition='serc',
                   verbose=0,
                   sacct_data_path=None,
                   sacct_h5_file=None,
-                  n_cpu=None
+                  n_cpu=None,
+                  no_hdf5=False
                   ):
     #
+    '''
+    # @no_hdf5: run the report from SACCT, even if HDF5 exists. Do not load from HDF5.
+    '''
     end_dtm = end_dtm or dtm.datetime.now()
     end_date = end_dtm.date()
     
@@ -265,11 +271,7 @@ def get_sacct_direct_or_hdf5(partition='serc',
     # h5 file = "sacct_sherlock_p{part}_g{group}_u{user}_{start}_{end}.h5"
     # TODO: consider additional hash? State?
     if sacct_h5_file is None or sacct_h5_file.strip() == '':
-            sacct_h5_file = os.path.join(sacct_data_path, f'sacct_sherlock_p{str(partition).upper()}_g{str(group).upper()}_u{user}_{start_date.year:04}{start_date.month:02}{start_date.day:02}_{end_dtm.year:04}{end_dtm.month:02}{end_dtm.day:02}.h5')
-            #sacct_h5_file = f'sacct_data/sacct_sherlock_p{str(partition).upper()}_g{str(group).upper()}_u{user}_{start_date.year:04}{start_date.month:02}{start_date.day:02}_{end_dtm.year:04}{end_dtm.month:02}{end_dtm.day:02}.h5'
-#     print('** ** ', sacct_h5_file)
-#     print(f'*** sacct_h5_file [{os.path.isfile(sacct_h5_file)}]: {sacct_h5_file}')
-#     return None
+            sacct_h5_file = os.path.join(sacct_data_path, f'sacct_data_p{str(partition).upper()}_g{str(group).upper()}_u{user}_{start_date.year:04}{start_date.month:02}{start_date.day:02}_{end_dtm.year:04}{end_dtm.month:02}{end_dtm.day:02}.h5')
     
     if verbose:
         print('*** dates: {} - {}'.format(start_date, end_date))
@@ -277,7 +279,7 @@ def get_sacct_direct_or_hdf5(partition='serc',
     if not os.path.isdir(sacct_data_path):
         os.path.makedirs(sacct_data_path)
     #
-    if os.path.isfile(sacct_h5_file):
+    if os.path.isfile(sacct_h5_file) and not no_hdf5:
         if verbose:
             print('*** Creating SACCT object from HDF5 {}'.format(sacct_h5_file))
         #SACCT_obj = hpc_lib.SACCT_data_from_h5(sacct_h5_file, keep_raw_data=False, n_cpu=n_cpus)
@@ -446,6 +448,8 @@ class SACCT_data_handler(object):
         if jobs_summary is None:
             jobs_summary = self.jobs_summary
         #
+        # TRES columns, from SACCT. Default is to use the jobs_summary data, but
+        #. a vector can be passed for those data.
         if TUI_min is None:
             TUI_min = jobs_summary['TRESUsageInMin']
         if TUI_ave is None:
@@ -455,6 +459,11 @@ class SACCT_data_handler(object):
         if TUI_tot is None:
             TUI_tot = jobs_summary['TRESUsageInTot']
         #
+        if not numpy.prod([len(X)==len(TUI_min) for X in [TUI_ave, TUI_max, TUI_tot]]):
+            print('** ERROR: Runtime exception; TRES Array lengths are not equal: {},{},{},{}'.format(*[len(x) for x in [TUI_min, TUI_ave, TUI_max, TUI_tot]]))
+             # raise exception, or just return None?
+            return None
+        #
         # kmg_to_num()
         # ok, but... these are not the same type. 
         # gpumem: kmg_to_num().astype(int)
@@ -462,12 +471,45 @@ class SACCT_data_handler(object):
         # energy: int
         cls = [ss.split('/')[1] if '/' in ss else ss for ss in tres_cols]
         #dtype_return = [(f'{cl}_{s}', int) for cl in cls for s in ('min', 'ave', 'max', 'tot')]
-        dtype_return = [(f'{cl}_{s}', int) for cl in ['gpuutil', 'energy'] for s in ('min', 'ave', 'max', 'tot')]
-        dtype_return += [(f'{cl}_{s}', int) for cl in ['gpumem'] for s in ('min', 'ave', 'max', 'tot')]
+        dtype_return = [(f'{cl}_{s}', int) for cl in ['gpuutil', 'gpumem', 'energy'] for s in ('min', 'ave', 'max', 'tot')]
+        #dtype_return += [(f'{cl}_{s}', int) for cl in ['gpumem'] for s in ('min', 'ave', 'max', 'tot')]
         #
         # now, create an output array, parse all the fields, populate the array.
+        gpu_data_array = numpy.zeros(len(TUI_min), dtype=dtype_return)
+        #
+        # populate the array. Is there a pretty way to do this?
+        # this will not be elegant or pretty, but we need to handle data exceptions, so we'll just use
+        #. brute force.
 
-        return None 
+        for CL, cl in zip([TUI_min, TUI_ave, TUI_max, TUI_tot],
+                  ['min', 'ave', 'max', 'tot']):
+            tres_data =[]
+            #for k, rw in enumerate(SACCT_obj['TRESUsageInMin']):
+            for k,rw in enumerate(SACCT_obj[CL]):
+                # We'll take the max or sum value of each of these quantities (max-max, max-ave, max-min)
+                quants = {'energy': [0], 'gpumem':[0], 'gpuutil':[0]}
+                #
+                for d in rw.strip().split(','):
+                    #print('** ', d)
+                    if rw.strip() == '':
+                        continue
+                    ky,vl = d.split('=')
+                    if '/' in ky:
+                        #print('*** ', ky)
+                        ky = ky.split('/')[1]
+                    #print(f'** {ky} :: {vl}')
+                    if ky in quants.keys():
+                        quants[ky] += [hpc_lib.kmg_to_num(vl)]
+                #
+                tres_data += [[numpy.sum(quants['energy']), numpy.max(quants['gpumem']), numpy.max(quants['gpuutil'])]]
+            #
+            tres_data = numpy.array(tres_data)
+            #print('** tres_data shape: ', tres_data.shape)
+            gpu_data_array[f'energy_{cl}'][:]  = tres_data[:,0]
+            gpu_data_array[f'gpumem_{cl}']  = tres_data[:,1]
+            gpu_data_array[f'gpuutil_{cl}'] = tres_data[:,2]
+
+        return gpu_data_array
 
     #
     def compute_mpd_epoch_dt(self, test_col='Submit', test_index=0, yr_upper=3000, yr_lower=1000):
@@ -2084,10 +2126,11 @@ class SACCT_data_direct(SACCT_data_handler):
     #   it was a good idea to put a "|" in their jobname. Not much value in Jobname, it's user defined (and so
     #   unreliable), and expensive to store.
     # , 'Jobname'
-    format_list_default = ['User', 'Group', 'GID', 'Account', 'JobID', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus', 'ReqMem',
+    format_list_default = ['User', 'Group', 'GID', 'Account', 'JobID', 'JobName', 'JobIDRaw', 'partition', 'state', 'time', 'ncpus', 'ReqMem',
                'nnodes', 'Submit', 'Eligible', 'start', 'end', 'elapsed', 'SystemCPU', 'UserCPU',
                'TotalCPU', 'NTasks', 'CPUTimeRaw', 'Suspended', 'ReqTRES', 'AllocTRES', 'MaxRSS', 'AveRSS', 'AveVMsize', 'MaxVMsize',
-               'MaxDiskWrite', 'MaxDiskRead', 'AveDiskWrite', 'AveDiskRead']
+               'MaxDiskWrite', 'MaxDiskRead', 'AveDiskWrite', 'AveDiskRead','TRESUsageInMin%100', 
+               'TRESUsageInAve%100', 'TRESUsageInMax%100', 'TRESUsageInTot%100']
     def __init__(self, group=None, partition=None, delim='|', start_date=None, end_date=None, more_options=[], delta_t_days=10, default_catalog_length=180,
         format_list=None, n_cpu=None, types_dict=None, verbose=0, chunk_size=1000,
         h5out_file=None, keep_raw_data=False, raw_output_file=None, n_points_usage=1000,
@@ -3700,7 +3743,6 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #   also de-dupe these rows (sort by job_id, then ???; then take max/min values for start, end, etc. times). But keep an eye on it; it could make mistakes.
     '''
     #
-    #
     if data is None:
         raise Exception('No data provided.')
     if len(data)==0:
@@ -3721,6 +3763,13 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     #. empty sets... so ugh. So the TODO is to handle those processes that return empty sets. In the short term, work around
     #. that problem by running on a small (1...) pool().
     #
+    # 2026-07-24 yoder:
+    #. Add GPUmem and GPUutil columns. These will parse the TRESUtilIn{} columns. Two approaches:
+    #.  1) like NGPUs: add a aggregator + parser function for each column. This will nominally be compute-
+    #.   inefficient, since it will -- I think, need to parse the field-vector for every value we want to
+    #.   extract.
+    #.  2) Collect the aggregated string, then parse it after jobs_summary returns. Either add columns
+    #.    or just add parsing functions -- like believe we did originally for GPUs.
     # LOTS of problems handling small data sets! See NTASKS handler. We will probably nedd to do something like that for
     #. all fields?
     js_col_f = [('End',       'End', lambda x: float(numpy.nanmax(numpy.float64(x))) ),\
@@ -3737,7 +3786,11 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
                 ('AveDiskWrite', 'AveDiskWrite', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
                 ('MaxDiskRead',  'MaxDiskRead', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
                 ('AveDiskRead',  'AveDiskRead', lambda x: float(numpy.nanmax(numpy.float64(x))) ),
-                ('NGPUs', 'AllocTRES', lambda x: int(numpy.nanmax(get_NGPUs(x))) )
+                ('NGPUs', 'AllocTRES', lambda x: int(numpy.nanmax(get_NGPUs(x))) ),
+                ('TRESUsageInMin', 'TRESUsageInMin', lambda x: ','.join([s for s in x if not s is None]) ),
+                ('TRESUsageInAve', 'TRESUsageInAve', lambda x: ','.join([s for s in x if not s is None]) ),
+                ('TRESUsageInMax', 'TRESUsageInMax', lambda x: ','.join([s for s in x if not s is None]) ),
+                ('TRESUsageInTot', 'TRESUsageInTot', lambda x: ','.join([s for s in x if not s is None]) )
                 ]
     #
     n_cpu = int(n_cpu or 1)
@@ -3930,6 +3983,22 @@ def calc_jobs_summary(data=None, verbose=0, n_cpu=None, step_size=1000):
     if verbose:
         print('** DEBUG: jobs_summary.shape = {}'.format(jobs_summary.shape))
     #
+    # Now, get the post-hoc fields. I think we would/should do this here. Doing it here should 
+    #. run this on each thread, for MPP parallelization. One risk is that some smaller subsets
+    #. might not have all the data populated? If this is a problem we'll just move this to
+    # __init__ (or wherever we call calc_jobs_summary() ), and add extra cols after we get the
+    #. main jobs_summary array.
+    #
+    # Get an array of the new data ()
+    # merge that array into jobs_summary (note the newer merge syntax...)
+    tres_data = self.get_TRESUsageIn_data(jobs_summary=jobs_summary, TUI_min=None, TUI_ave=None, TUI_max=None, TUI_tot=None)
+    #
+    # we can't merge these directly, because they include 'O' string-like types. We can "fix" the dtypes,
+    #. add cols one at a time, other hard things, or just use pandas.
+    df1 = pd.DataFrame(jobs_summary)
+    df2 = pd.DataFrame(tres_data)
+    jobs_summary=pd.concat([df1, df2], axis=1).to_records(index=False)
+    # 
     return jobs_summary
 #
 def get_NGPUs(alloc_tres=None):
